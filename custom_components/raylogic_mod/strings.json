@@ -1,0 +1,70 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Raylogic MOD2U / MOD4U / MOD2F",
+        "description": "Device ka IP address daalo, aur Device Model chuno - MOD2U (2 channel, 1 pair), MOD4U (4 channel, 2 pairs), ya MOD2F (single-channel, fixed Fan type). Agla step aapke chune hue model ke hisaab se sirf utne hi channel fields dikhayega (MOD2F ke liye koi Type dropdown nahi dikhega - wo hamesha Fan hi hota hai, sirf Area aur channel number daalna hai).",
+        "data": {
+          "host": "Device IP Address",
+          "port": "Port (default 5550)",
+          "device_model": "Device Model"
+        }
+      },
+      "channels": {
+        "title": "Configure channels",
+        "description": "Area wahi daalo jo Mod Settings screen mein dikhta hai (e.g. 12 ya 16). Area = 0 sirf tab chalega jab sabhi channel 'relay' hon (HA khud seekh lega app/switch se ek baar toggle karke) - Dimmer/Fan/Curtain/CTC ke liye Area zaroor manually dena hoga. Channels 2 PAIRS mein hote hain: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) (MOD2U par sirf Pair 1 exist karta hai). CTC (colour-temperature light) aur Curtain DONO apni pair ke dono physical channels internally use karte hain - agar Channel 1 Type = 'ctc' ya 'curtain' chuno to Channel 2 Type field automatically ignore ho jaata hai (ek hi entity banti hai), aur waisa hi Channel 3/4 ke liye. CTC choose karne par uska Driver Mode bhi batao - 'single' (app mein 'Single Driver' checked) ya 'double'.",
+        "data": {
+          "legacy_area": "Area (0 = relay-only auto-learn, 1-16 = manual)",
+          "channel_start": "First Channel Number (usually 1, but check Raylogic GO app if channels don't start at 1)",
+          "channel_1_type": "Channel 1 Type (Pair 1)",
+          "channel_2_type": "Channel 2 Type (Pair 1)",
+          "channel_3_type": "Channel 3 Type (Pair 2)",
+          "channel_4_type": "Channel 4 Type (Pair 2)",
+          "channel_1_ctc_mode": "Channel 1 CTC Driver Mode (only if Channel 1 Type = ctc)",
+          "channel_2_ctc_mode": "Channel 2 CTC Driver Mode (only if Channel 2 Type = ctc)",
+          "channel_3_ctc_mode": "Channel 3 CTC Driver Mode (only if Channel 3 Type = ctc)",
+          "channel_4_ctc_mode": "Channel 4 CTC Driver Mode (only if Channel 4 Type = ctc)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to device. Check IP address and ensure device is powered on.",
+      "unknown": "Unexpected error. Check logs for details.",
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC channels ke liye Area (0 nahi) manually dena zaroori hai - auto-learn sirf Relay ke liye kaam karta hai."
+    },
+    "abort": {
+      "already_configured": "This Raylogic device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Raylogic device",
+        "description": "Channel type (relay/dimmer/fan/curtain/ctc), Area, ya channel numbering yahan se badlo - device delete karne ki zaroorat nahi. Device Model yahan se badla nahi ja sakta - model change karna ho to device delete karke naya add karo. Yaad rakho: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) - Curtain/CTC ek pair ka dono channel consume karte hain.",
+        "data": {
+          "host": "Device IP Address",
+          "port": "Port (default 5550)",
+          "legacy_area": "Area (0 = auto-learn, 1-16 = manual)",
+          "channel_start": "First physical channel number",
+          "channel_1_type": "Channel 1 type (Pair 1)",
+          "channel_2_type": "Channel 2 type (Pair 1)",
+          "channel_3_type": "Channel 3 type (Pair 2)",
+          "channel_4_type": "Channel 4 type (Pair 2)",
+          "channel_1_ctc_mode": "Channel 1 CTC Driver Mode",
+          "channel_2_ctc_mode": "Channel 2 CTC Driver Mode",
+          "channel_3_ctc_mode": "Channel 3 CTC Driver Mode",
+          "channel_4_ctc_mode": "Channel 4 CTC Driver Mode"
+        }
+      }
+    },
+    "error": {
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC ke liye Area manually dena zaroori hai (0 sirf Relay LEARN mode ke liye chalta hai)."
+    }
+  },
+  "issues": {
+    "curtain_pair_unconfirmed": {
+      "title": "Pair {pair} curtain entity nahi bani",
+      "description": "Channel {channel} (Pair {pair}, device {ip}) ko Curtain configure kiya gaya hai, lekin uske open/close/stop command bytes abhi tak confirmed nahi hain. Isliye is pair ki entity HA me nahi banayi gayi.\n\n**Fix:** Raylogic GO app se seedha is module (Pair {pair}) ke curtain ko ek baar Open, phir Close, phir Stop karo, aur us waqt app-aur-device ke beech ka network traffic (Wireshark/Docklight) capture karke *AR=/*AZ= wali exact line developer ko bhejo. Bytes milte hi entity turant ban jayegi, koi aur config change nahi karna padega."
+    }
+  }
+}
