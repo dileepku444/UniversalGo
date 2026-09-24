@@ -12,9 +12,11 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
-    DEFAULT_PORT, DOMAIN, AREA_MAX, LEGACY_DEFAULT_AREA,
+    DEFAULT_PORT, DOMAIN, AREA_MAX, LEGACY_DEFAULT_AREA, CLOSE_TIMEOUT,
     DEVICE_MODELS, DEFAULT_MODEL, MODEL_MOD2U, MODEL_MOD4U, MODEL_MOD2F,
+    CONF_SCENE_COUNTS, parse_scene_map,
 )
+from . import discovery
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,9 +134,13 @@ async def validate_connection(hass, host: str, port: int) -> dict:
     except Exception:
         pass
     finally:
+        # BUG FIX: pehle yahan wait_closed() unbounded tha - "Add device"
+        # wizard bhi is se bina-timeout wale close ka shikaar ho sakta tha
+        # agar device TCP connection cleanly close na kare. Ab CLOSE_TIMEOUT
+        # ke andar hard-capped hai.
         try:
             writer.close()
-            await writer.wait_closed()
+            await asyncio.wait_for(writer.wait_closed(), timeout=float(CLOSE_TIMEOUT))
         except Exception:
             pass
 
@@ -146,68 +152,145 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self._data: dict[str, Any] = {}
+        # v1.6.0: network scan ke hits, aur chune hue hit se form defaults
+        # (host/port/model/area/channel_start) - manual add me khaali.
+        self._hits: list[dict] = []
+        self._suggest: dict[str, Any] = {}
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        return RaylogicModOptionsFlow(config_entry)
+        return RaylogicModOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """v1.6.0: pehle poochho - network scan ya IP manually."""
+        return self.async_show_menu(step_id="user", menu_options=["scan", "manual"])
+
+    async def async_step_scan(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Local subnet(s) ke har host ko TCP 5550 par probe karo (discovery.py).
+        Pehle se configured hosts (raylogic_mod + raylogic) skip hote hain."""
+        errors: dict[str, str] = {}
+        subnets_default = ", ".join(await discovery.async_local_subnets(self.hass))
+        if user_input is not None:
+            typed = str(user_input.get("subnets", "") or "").strip()
+            subnets = [t.strip() for t in typed.replace(";", ",").split(",") if t.strip()]
+            if not discovery.hosts_in(subnets):
+                errors["base"] = "bad_subnet"
+            else:
+                self._hits = await discovery.async_scan(
+                    subnets, skip=discovery.configured_hosts(self.hass),
+                )
+                if self._hits:
+                    return await self.async_step_pick()
+                errors["base"] = "no_devices_found"
+        return self.async_show_form(
+            step_id="scan",
+            data_schema=vol.Schema({
+                vol.Required("subnets", default=subnets_default): selector.TextSelector(),
+            }),
+            errors=errors,
+        )
+
+    async def async_step_pick(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Scan me mile modules me se ek chuno -> manual form uske detected
+        values (model/area/first channel) se pre-filled khulta hai; user
+        confirm/badal sakta hai. Connection validation wahi purana hai."""
+        labels = {discovery.describe(h): h for h in self._hits}
+        if user_input is not None:
+            hit = labels.get(user_input.get("device"))
+            if hit is not None:
+                self._suggest = {
+                    CONF_HOST: hit["host"],
+                    CONF_PORT: hit.get("port", DEFAULT_PORT),
+                }
+                if hit.get("model"):
+                    self._suggest[CONF_DEVICE_MODEL] = hit["model"]
+                if hit.get("area") is not None:
+                    self._suggest[CONF_LEGACY_AREA] = hit["area"]
+                    self._suggest[CONF_CHANNEL_START] = hit["channel_start"]
+                return await self.async_step_manual()
+        return self.async_show_form(
+            step_id="pick",
+            data_schema=vol.Schema({
+                vol.Required("device", default=next(iter(labels))): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=list(labels))
+                ),
+            }),
+            description_placeholders={"count": str(len(self._hits))},
+        )
+
+    async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Step 1: host/port/device model - konsa hardware hai (MOD2U ya
         MOD4U) pehle hi maloom hona chahiye taaki step 2 mein sirf utne hi
         channel fields dikhein jitne us model par physically exist karte
         hain."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            host = user_input[CONF_HOST]
+            host = str(user_input[CONF_HOST]).strip()
+            user_input[CONF_HOST] = host
             port = int(user_input.get(CONF_PORT, DEFAULT_PORT))
-            try:
-                info = await validate_connection(self.hass, host, port)
-            except ConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error connecting to %s", host)
-                errors["base"] = "unknown"
+            # F2 (v1.6.1): ye module pehle se 'raylogic' (main/DIN)
+            # integration me hai to yahan dobara add mat hone do - warna
+            # ek hi device par do TCP connections (do integrations se) khulte.
+            # Connect karne se PEHLE check, taaki us live device ko chhuein
+            # bhi nahi.
+            if host in discovery.other_integration_hosts(self.hass):
+                errors["base"] = "host_in_other_integration"
             else:
-                # BUG FIX (root cause of "HA startup slow" / duplicate
-                # connections): pehle yahan unique_id = mac (agar *KA= line
-                # config-flow ke 5s validation window ke andar mil jaaye)
-                # ORR host (agar na mile) hota tha. Ye NON-DETERMINISTIC
-                # tha - same physical device ko DO ALAG baar add karne ki
-                # koshish mein, agar dusri baar *KA= line thodi der se aayi
-                # (ya bilkul na aayi - network jitter, device busy jawab
-                # dene mein kyunki ek connection pehle se khula hai), to
-                # unique_id DIFFERENT ban jaata (mac-based vs raw host
-                # string) - is wajah se `_abort_if_unique_id_configured()`
-                # is duplicate ko pakad hi nahi paata tha, aur DO config
-                # entries usi ek physical IP par ban jaate the. Dono apna
-                # apna TCP connection kholne ki koshish karte - device
-                # (jo shayad ek time par sirf EK client accept karta hai)
-                # in dono ke beech confuse hokar slow/flaky rehta, HAR
-                # startup par is contention ki wajah se retries hote,
-                # jo poore HA boot ko slow feel karata. Ab unique_id hamesha
-                # host:port se hi deterministically banta hai - node/mac sirf
-                # cosmetic reference ke liye store hota hai, uniqueness ke
-                # liye kabhi use nahi hota, isliye same IP:port ka doosra
-                # "Add" hamesha turant abort ho jayega (already_configured).
-                unique_id = f"{host}_{port}"
-                await self.async_set_unique_id(unique_id)
-                self._abort_if_unique_id_configured()
-                self._data.update(user_input)
-                self._data[CONF_PORT] = port
-                return await self.async_step_channels()
+                try:
+                    info = await validate_connection(self.hass, host, port)
+                except ConnectionError:
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception("Unexpected error connecting to %s", host)
+                    errors["base"] = "unknown"
+                else:
+                    # BUG FIX (root cause of "HA startup slow" / duplicate
+                    # connections): pehle yahan unique_id = mac (agar *KA= line
+                    # config-flow ke 5s validation window ke andar mil jaaye)
+                    # ORR host (agar na mile) hota tha. Ye NON-DETERMINISTIC
+                    # tha - same physical device ko DO ALAG baar add karne ki
+                    # koshish mein, agar dusri baar *KA= line thodi der se aayi
+                    # (ya bilkul na aayi - network jitter, device busy jawab
+                    # dene mein kyunki ek connection pehle se khula hai), to
+                    # unique_id DIFFERENT ban jaata (mac-based vs raw host
+                    # string) - is wajah se `_abort_if_unique_id_configured()`
+                    # is duplicate ko pakad hi nahi paata tha, aur DO config
+                    # entries usi ek physical IP par ban jaate the. Dono apna
+                    # apna TCP connection kholne ki koshish karte - device
+                    # (jo shayad ek time par sirf EK client accept karta hai)
+                    # in dono ke beech confuse hokar slow/flaky rehta, HAR
+                    # startup par is contention ki wajah se retries hote,
+                    # jo poore HA boot ko slow feel karata. Ab unique_id hamesha
+                    # host:port se hi deterministically banta hai - node/mac sirf
+                    # cosmetic reference ke liye store hota hai, uniqueness ke
+                    # liye kabhi use nahi hota, isliye same IP:port ka doosra
+                    # "Add" hamesha turant abort ho jayega (already_configured).
+                    unique_id = f"{host}_{port}"
+                    await self.async_set_unique_id(unique_id)
+                    self._abort_if_unique_id_configured()
+                    self._data.update(user_input)
+                    self._data[CONF_PORT] = port
+                    return await self.async_step_channels()
 
+        sug = self._suggest
+        host_key = (
+            vol.Required(CONF_HOST, default=sug[CONF_HOST])
+            if CONF_HOST in sug else vol.Required(CONF_HOST)
+        )
         schema = vol.Schema({
-            vol.Required(CONF_HOST): selector.TextSelector(),
-            vol.Optional(CONF_PORT, default=DEFAULT_PORT): selector.NumberSelector(
+            host_key: selector.TextSelector(),
+            vol.Optional(CONF_PORT, default=sug.get(CONF_PORT, DEFAULT_PORT)): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=1, max=65535, mode=selector.NumberSelectorMode.BOX
                 )
             ),
-            vol.Required(CONF_DEVICE_MODEL, default=DEFAULT_MODEL): selector.SelectSelector(
+            vol.Required(
+                CONF_DEVICE_MODEL, default=sug.get(CONF_DEVICE_MODEL, DEFAULT_MODEL)
+            ): selector.SelectSelector(
                 selector.SelectSelectorConfig(options=_model_options())
             ),
         })
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="manual", data_schema=schema, errors=errors)
 
     async def async_step_channels(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Step 2: Area, channel numbering, aur har channel ka type - sirf
@@ -232,7 +315,9 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         schema_fields = {
-            vol.Optional(CONF_LEGACY_AREA, default=LEGACY_DEFAULT_AREA): selector.NumberSelector(
+            vol.Optional(
+                CONF_LEGACY_AREA, default=self._suggest.get(CONF_LEGACY_AREA, LEGACY_DEFAULT_AREA)
+            ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=AREA_MAX, mode=selector.NumberSelectorMode.BOX
                 )
@@ -242,7 +327,9 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # agar Raylogic GO app mein aapke is module ke channels jaise
             # "5, 6" ya "5,6,7,8" dikhte hain (1,2.. nahi), to yahan 5 daal
             # do taaki commands sahi channel number par jaayen.
-            vol.Optional(CONF_CHANNEL_START, default=1): selector.NumberSelector(
+            vol.Optional(
+                CONF_CHANNEL_START, default=self._suggest.get(CONF_CHANNEL_START, 1)
+            ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=1, max=255, mode=selector.NumberSelectorMode.BOX
                 )
@@ -261,8 +348,12 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
     fundamentally badal jaata) - model change karna ho to device delete
     karke naya add karo."""
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    # BUG FIX (v1.6.0, live HA 2026.9 par pakda gaya): pehle yahan
+    # __init__(config_entry) me `self.config_entry = config_entry` set hota
+    # tha. Naye HA me `config_entry` ek read-only property hai jo HA khud
+    # bharta hai - us assignment se AttributeError aata tha aur "Configure"
+    # button 500 error de deta tha. Ab HA ka diya hua self.config_entry hi
+    # use hota hai.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         current = {**self.config_entry.data, **self.config_entry.options}
@@ -271,6 +362,16 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             _coerce_numbers(user_input)
+            if CONF_HOST in user_input:
+                user_input[CONF_HOST] = str(user_input[CONF_HOST]).strip()
+            # v1.6.2: F2 jaisa hi block - Configure se host badal kar kisi
+            # 'raylogic' (main) wale module par point karna save hi na ho.
+            if user_input.get(CONF_HOST) in discovery.other_integration_hosts(self.hass):
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self._schema(model, current),
+                    errors={"base": "host_in_other_integration"},
+                )
             ch_types = tuple(
                 user_input.get(_ALL_CH_TYPE_KEYS[i], _default_channel_type(model)) for i in range(channel_count)
             )
@@ -279,6 +380,16 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
                     step_id="init",
                     data_schema=self._schema(model, current),
                     errors={"base": "area_required_for_non_relay"},
+                )
+            # v1.6.0: area scenes - kuch likha hai lekin ek bhi valid
+            # "area:scene" nahi nikla to typo hai, chup-chaap save mat karo.
+            scene_text = str(user_input.get(CONF_SCENE_COUNTS, "") or "").strip()
+            user_input[CONF_SCENE_COUNTS] = scene_text
+            if scene_text and not parse_scene_map(scene_text):
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self._schema(model, current),
+                    errors={"base": "bad_scene_map"},
                 )
             # NOTE: async_create_entry() sirf FlowResult banata hai -
             # entry.options tabhi update hote hain jab HA ka flow manager
@@ -310,4 +421,9 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
             ),
         }
         fields.update(_channels_schema_fields(model, current))
+        # v1.6.0: Raylogic GO app ke area scenes, e.g. "12:1,2,3; 5:1,4".
+        # Kisi bhi EK device par daalo - saare devices ka union banta hai.
+        fields[
+            vol.Optional(CONF_SCENE_COUNTS, default=current.get(CONF_SCENE_COUNTS, ""))
+        ] = selector.TextSelector()
         return vol.Schema(fields)

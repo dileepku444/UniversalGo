@@ -1,17 +1,15 @@
 """Raylogic MOD2U / MOD4U curtain platform.
 
-Model_Number_Mod4u.txt - REAL MOD4U capture (Area 7, "Curtain Mode / All
-Code") - CONFIRMED for BOTH pairs (curtain ek alag frame-shape use karta
-hai, formula se derive nahi hua, aur CTC ki tarah ye bhi ek PAIRED mode
-hai - jis pair ka ek channel curtain banaya jaaye, wahi pura pair ek
-logical curtain entity ban jaata hai). MOD2U par sirf Pair 1 exist karta
-hai, jo isi confirmed data se already covered hai.
+Curtain ek alag frame-shape use karta hai (cmd 0x27/0x26, na ki 0x1A) aur
+CTC ki tarah ek PAIRED mode hai - jis pair ka ek channel curtain banaya
+jaaye, wahi poora pair ek logical curtain entity ban jaata hai.
 
-Entity creation CURTAIN_PAIR_COMMANDS (const.py) se generically derive
-hoti hai - jis pair ke liye literal bytes maujood hain, uski entity ban
-jaati hai; agar kabhi koi pair "None" reh jaaye (future device variant),
-uske liye entity skip ho kar ek Repairs issue ban jaata hai, hardcoded
-index par depend nahi karta.
+Curtain ka wire frame ab poori tarah channel number se DERIVE hota hai
+(protocol.py -> curtain_slot_for_channel / curtain_frame, aur const.py ka
+Curtain block) - pehle yahan har pair ke liye hardcoded literal bytes
+chahiye hote the, jiski wajah se curtain sirf usi ek device par chalti
+thi jiska capture liya gaya tha. Ab har curtain channel ki entity banti
+hai, chahe device kisi bhi Area (1-16) mein ho.
 
 CTC (Double/Single Driver CCT) ab supported hai, lekin ek `light` entity
 ke taur par (Colour Temperature control) - dekho light.py -
@@ -23,10 +21,10 @@ import logging
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature, CoverDeviceClass
 from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers import issue_registry as ir
 
-from .const import DOMAIN, CH_TYPE_CURTAIN, CH_TYPE_CTC, CURTAIN_PAIR_COMMANDS
+from .const import DOMAIN, CH_TYPE_CURTAIN, CH_TYPE_CTC
 from .protocol import RaylogicModDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,39 +35,24 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
     for ch_num, state in device.channel_states.items():
         if state.get("type") == CH_TYPE_CURTAIN:
-            pair_index = device.pair_index_for_channel(ch_num)
-            cmd_map = CURTAIN_PAIR_COMMANDS.get(pair_index, {})
-            confirmed = all(cmd_map.get(k) for k in ("open", "close", "stop"))
-            if confirmed:
-                entities.append(RaylogicModCover(hass, entry, device, ch_num, state))
-            else:
-                _LOGGER.warning(
-                    "Raylogic %s %s: channel %d curtain type hai "
-                    "(Pair %d), lekin uske curtain bytes abhi confirmed "
-                    "nahi hain - entity nahi banai. App se ek baar "
-                    "open/close karke log share karo.",
-                    device.model_name, device.ip, ch_num, pair_index + 1,
-                )
-                # NAYA: sirf log par depend nahi karte (log level user ke
-                # configuration.yaml me kabhi WARNING se upar cap ho sakta
-                # hai aur ye line kabhi dikhti hi nahi) - ek Repairs issue
-                # bhi banao jo Settings > Repairs me hamesha dikhega, chahe
-                # logger config kuch bhi ho. Isse turant pata chal jaata hai
-                # ki "missing entity" ek known/expected gap hai, koi random
-                # crash nahi.
-                ir.async_create_issue(
-                    hass,
-                    DOMAIN,
-                    f"curtain_pair_unconfirmed_{entry.entry_id}_{pair_index}",
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.WARNING,
-                    translation_key="curtain_pair_unconfirmed",
-                    translation_placeholders={
-                        "ip": device.ip,
-                        "channel": str(ch_num),
-                        "pair": str(pair_index + 1),
-                    },
-                )
+            # BUG FIX: pehle yahan ek "kya is pair ke hardcoded curtain
+            # bytes const.py mein maujood hain?" wala gate tha - sirf 2
+            # pairs ke liye literal bytes the, isliye teesre pair se aage
+            # ki curtain entity banti hi nahi thi. Ab curtain frame poori
+            # tarah channel number se derive hota hai (protocol.py ka
+            # curtain_slot_for_channel/curtain_frame), isliye har curtain
+            # channel ki entity hamesha ban sakti hai - chahe device kisi
+            # bhi Area (1-16) mein ho aur uske channel numbers kuch bhi
+            # hon.
+            _LOGGER.debug(
+                "Raylogic %s %s: curtain channel %d -> device pair %d, "
+                "global curtain slot %d (frame *AR=%s).",
+                device.model_name, device.ip, ch_num,
+                device.pair_index_for_channel(ch_num) + 1,
+                device.curtain_slot_for_channel(ch_num),
+                device.curtain_frame(ch_num, "open"),
+            )
+            entities.append(RaylogicModCover(hass, entry, device, ch_num, state))
         elif state.get("type") == CH_TYPE_CTC:
             _LOGGER.debug(
                 "Raylogic %s %s: channel %d CTC type hai - is platform "
@@ -99,14 +82,14 @@ class RaylogicModCover(CoverEntity):
         suffix = device.ip_suffix
         area = initial_state.get("area", 0)
         model = device.model
-        self._attr_unique_id = f"{device.node_id or device.ip}_{model}_ch{ch_num}"
+        self._attr_unique_id = f"{device.stable_id}_{model}_ch{ch_num}"
         self._attr_name = f"{model}_{suffix}_area{area}_ch{ch_num}_curtain"
         self._is_closed = not initial_state.get("on", False)
 
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device.node_id or self._device.ip)},
+            identifiers={(DOMAIN, self._device.stable_id)},
             name=f"Raylogic {self._device.model_name} ({self._device.ip})",
             manufacturer="Raylogic",
             model=f"{self._device.model_name} - {self._device.model_desc}",
@@ -115,7 +98,15 @@ class RaylogicModCover(CoverEntity):
 
     @property
     def available(self):
-        return self._device.is_connected
+        # UX FIX: user ne explicitly maanga - dashboard par kabhi
+        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
+        # background mein disconnect/reconnect ho raha ho. Entity
+        # hamesha apni last-known state (On/Off/brightness/etc.)
+        # dikhati rahegi. Underlying protocol layer disconnects
+        # ko khud silently/background mein handle karta hai (fast
+        # reconnect + command-queue-and-replay) - is availability
+        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        return True
 
     @property
     def is_closed(self):
@@ -135,23 +126,31 @@ class RaylogicModCover(CoverEntity):
         await self._device.set_cover(self._ch_num, "stop")
 
     async def async_added_to_hass(self):
+        # SCALE FIX: entry-scoped dispatcher signal instead of a global
+        # hass.bus event - see __init__.py's _handle_state_update comment.
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_state_update", self._on_update)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_state_update",
+                self._on_update,
+            )
         )
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_available", self._on_available)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_available",
+                self._on_available,
+            )
         )
 
     @callback
-    def _on_update(self, event):
-        d = event.data
-        if d.get("entry_id") == self._entry.entry_id and d.get("channel") == self._ch_num:
-            s = d.get("state", {})
-            if "on" in s:
-                self._is_closed = not bool(s["on"])
-            self.async_write_ha_state()
+    def _on_update(self, ch_num, state):
+        if ch_num != self._ch_num:
+            return
+        if "on" in state:
+            self._is_closed = not bool(state["on"])
+        self.async_write_ha_state()
 
     @callback
-    def _on_available(self, event):
-        if event.data.get("entry_id") == self._entry.entry_id:
-            self.async_write_ha_state()
+    def _on_available(self, _available):
+        self.async_write_ha_state()

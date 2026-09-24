@@ -8,6 +8,7 @@ import logging
 
 from homeassistant.components.light import LightEntity, ColorMode
 from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 
 from .const import (
@@ -51,7 +52,7 @@ class RaylogicModLight(LightEntity):
         self._ch_num = ch_num
         suffix = device.ip_suffix
         area = initial_state.get("area", 0)
-        self._attr_unique_id = f"{device.node_id or device.ip}_{device.model}_ch{ch_num}"
+        self._attr_unique_id = f"{device.stable_id}_{device.model}_ch{ch_num}"
         self._attr_name = f"{device.model}_{suffix}_area{area}_ch{ch_num}_dimmer"
         self._is_on = initial_state.get("on", False)
         self._brightness = initial_state.get("brightness", 0)
@@ -59,7 +60,7 @@ class RaylogicModLight(LightEntity):
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device.node_id or self._device.ip)},
+            identifiers={(DOMAIN, self._device.stable_id)},
             name=f"Raylogic {self._device.model_name} ({self._device.ip})",
             manufacturer="Raylogic",
             model=f"{self._device.model_name} - {self._device.model_desc}",
@@ -68,7 +69,15 @@ class RaylogicModLight(LightEntity):
 
     @property
     def available(self):
-        return self._device.is_connected
+        # UX FIX: user ne explicitly maanga - dashboard par kabhi
+        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
+        # background mein disconnect/reconnect ho raha ho. Entity
+        # hamesha apni last-known state (On/Off/brightness/etc.)
+        # dikhati rahegi. Underlying protocol layer disconnects
+        # ko khud silently/background mein handle karta hai (fast
+        # reconnect + command-queue-and-replay) - is availability
+        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        return True
 
     @property
     def is_on(self):
@@ -100,28 +109,36 @@ class RaylogicModLight(LightEntity):
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
+        # SCALE FIX: entry-scoped dispatcher signal instead of a global
+        # hass.bus event - see __init__.py's _handle_state_update comment.
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_state_update", self._on_update)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_state_update",
+                self._on_update,
+            )
         )
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_available", self._on_available)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_available",
+                self._on_available,
+            )
         )
 
     @callback
-    def _on_update(self, event):
-        d = event.data
-        if d.get("entry_id") == self._entry.entry_id and d.get("channel") == self._ch_num:
-            s = d.get("state", {})
-            if "on" in s:
-                self._is_on = bool(s["on"])
-            if "brightness" in s:
-                self._brightness = s["brightness"]
-            self.async_write_ha_state()
+    def _on_update(self, ch_num, state):
+        if ch_num != self._ch_num:
+            return
+        if "on" in state:
+            self._is_on = bool(state["on"])
+        if "brightness" in state:
+            self._brightness = state["brightness"]
+        self.async_write_ha_state()
 
     @callback
-    def _on_available(self, event):
-        if event.data.get("entry_id") == self._entry.entry_id:
-            self.async_write_ha_state()
+    def _on_available(self, _available):
+        self.async_write_ha_state()
 
 
 class RaylogicModCtcLight(LightEntity):
@@ -151,7 +168,7 @@ class RaylogicModCtcLight(LightEntity):
         self._ch_num = ch_num
         suffix = device.ip_suffix
         area = initial_state.get("area", 0)
-        self._attr_unique_id = f"{device.node_id or device.ip}_{device.model}_ch{ch_num}_ctc"
+        self._attr_unique_id = f"{device.stable_id}_{device.model}_ch{ch_num}_ctc"
         self._attr_name = f"{device.model}_{suffix}_area{area}_ch{ch_num}_ctc"
         self._is_on = initial_state.get("on", False)
         self._brightness = initial_state.get("brightness", 0)
@@ -160,7 +177,7 @@ class RaylogicModCtcLight(LightEntity):
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device.node_id or self._device.ip)},
+            identifiers={(DOMAIN, self._device.stable_id)},
             name=f"Raylogic {self._device.model_name} ({self._device.ip})",
             manufacturer="Raylogic",
             model=f"{self._device.model_name} - {self._device.model_desc}",
@@ -169,7 +186,15 @@ class RaylogicModCtcLight(LightEntity):
 
     @property
     def available(self):
-        return self._device.is_connected
+        # UX FIX: user ne explicitly maanga - dashboard par kabhi
+        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
+        # background mein disconnect/reconnect ho raha ho. Entity
+        # hamesha apni last-known state (On/Off/brightness/etc.)
+        # dikhati rahegi. Underlying protocol layer disconnects
+        # ko khud silently/background mein handle karta hai (fast
+        # reconnect + command-queue-and-replay) - is availability
+        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        return True
 
     @property
     def is_on(self):
@@ -213,27 +238,35 @@ class RaylogicModCtcLight(LightEntity):
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
+        # SCALE FIX: entry-scoped dispatcher signal instead of a global
+        # hass.bus event - see __init__.py's _handle_state_update comment.
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_state_update", self._on_update)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_state_update",
+                self._on_update,
+            )
         )
         self.async_on_remove(
-            self._hass.bus.async_listen(f"{DOMAIN}_available", self._on_available)
+            async_dispatcher_connect(
+                self._hass,
+                f"{DOMAIN}_{self._entry.entry_id}_available",
+                self._on_available,
+            )
         )
 
     @callback
-    def _on_update(self, event):
-        d = event.data
-        if d.get("entry_id") == self._entry.entry_id and d.get("channel") == self._ch_num:
-            s = d.get("state", {})
-            if "on" in s:
-                self._is_on = bool(s["on"])
-            if "brightness" in s:
-                self._brightness = s["brightness"]
-            if "color_temp_kelvin" in s:
-                self._kelvin = s["color_temp_kelvin"]
-            self.async_write_ha_state()
+    def _on_update(self, ch_num, state):
+        if ch_num != self._ch_num:
+            return
+        if "on" in state:
+            self._is_on = bool(state["on"])
+        if "brightness" in state:
+            self._brightness = state["brightness"]
+        if "color_temp_kelvin" in state:
+            self._kelvin = state["color_temp_kelvin"]
+        self.async_write_ha_state()
 
     @callback
-    def _on_available(self, event):
-        if event.data.get("entry_id") == self._entry.entry_id:
-            self.async_write_ha_state()
+    def _on_available(self, _available):
+        self.async_write_ha_state()

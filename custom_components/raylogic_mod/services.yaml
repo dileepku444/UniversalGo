@@ -1,0 +1,27 @@
+recall_scene:
+  name: Recall area scene
+  description: >-
+    Recall a Raylogic GO app area scene. It is a bus broadcast, so every
+    fixture in that area reacts; it is sent through every connected
+    MOD2U / MOD4U / MOD2F module at once.
+  fields:
+    area:
+      name: Area
+      description: Area number (1-16).
+      required: true
+      example: 12
+      selector:
+        number:
+          min: 1
+          max: 16
+          mode: box
+    scene:
+      name: Scene
+      description: Scene number to recall (1-64).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 64
+          mode: box

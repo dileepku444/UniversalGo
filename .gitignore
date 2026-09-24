@@ -1,0 +1,10 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Pre-1.6.4 learn-mode state (now stored in /config/.storage/raylogic_mod/)
+custom_components/raylogic_mod/device_state/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
