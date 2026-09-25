@@ -224,6 +224,46 @@ def configured_hosts(hass) -> set[str]:
     return _entry_hosts(hass, "raylogic_mod") | other_integration_hosts(hass)
 
 
+def ignored_hosts(hass) -> set[str]:
+    """HA ke "Discovered" card par user ne "Ignore" dabaya ho to entry
+    source=ignore ke saath bachti hai (bina data ke) - host uske unique_id
+    ("<host>_<port>") se nikalte hain, taaki auto-scan use dobara chhue bhi
+    nahi."""
+    hosts: set[str] = set()
+    for e in hass.config_entries.async_entries("raylogic_mod", include_ignore=True):
+        if e.source == "ignore" and e.unique_id and "_" in e.unique_id:
+            hosts.add(e.unique_id.rsplit("_", 1)[0])
+    return hosts
+
+
+async def async_auto_subnets(hass, max_subnets: int = 4) -> list[str]:
+    """Background scan ke subnets - user ko kuch type nahi karna padta:
+      1. HA ke apne enabled IPv4 adapters (async_local_subnets jaisa)
+      2. har configured module (raylogic_mod + raylogic) ka /24 - modules
+         kisi doosre VLAN par hon jahan HA route karta hai, to bhi cover
+    Duplicates hataye, max `max_subnets`, total hosts <= MAX_HOSTS."""
+    subnets = list(await async_local_subnets(hass))
+    for h in sorted(configured_hosts(hass)):
+        try:
+            ip = ipaddress.ip_address(h)
+        except ValueError:
+            continue    # hostname - skip
+        if ip.version != 4 or ip.is_loopback:
+            continue
+        net = str(ipaddress.ip_network(f"{h}/24", strict=False))
+        if net not in subnets:
+            subnets.append(net)
+    out: list[str] = []
+    total = 0
+    for net in subnets:
+        n = len(hosts_in([net]))
+        if not n or len(out) >= max_subnets or total + n > MAX_HOSTS:
+            continue
+        out.append(net)
+        total += n
+    return out
+
+
 async def async_scan(subnets: list[str], *, port: int = DEFAULT_PORT,
                      skip: set[str] | None = None,
                      concurrency: int = MAX_CONCURRENCY) -> list[dict]:

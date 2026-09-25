@@ -14,14 +14,19 @@ import re
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from datetime import timedelta
+
+from homeassistant.config_entries import (
+    ConfigEntry, ConfigEntryState, SOURCE_IGNORE, SOURCE_INTEGRATION_DISCOVERY,
+)
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 # BUG FIX (THE SCALE BUG - "connection lost" cascades + HA UI hang jab
 # bahut saare (50-100+) devices add kiye jaayein): pehle state/available
@@ -54,9 +59,11 @@ from .const import (
     CTC_MODE_SINGLE,
     DEVICE_MODELS, DEFAULT_MODEL,
     CONF_SCENE_COUNTS, SCENE_AREAS, SCENE_MAX, SCENE_DATA_KEY,
+    AUTO_SCAN_FIRST_DELAY, AUTO_SCAN_INTERVAL, AUTO_SCAN_MAX_SUBNETS, CONF_AUTO_DISCOVERY,
     SIGNAL_AREA_SCENE, merge_scene_maps,
 )
 from .protocol import RaylogicModDevice
+from . import discovery
 from .discovery import other_integration_hosts
 
 _LOGGER = logging.getLogger(__name__)
@@ -159,7 +166,101 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.services.async_register(
         DOMAIN, SERVICE_RECALL_SCENE, _recall_scene, schema=RECALL_SCENE_SCHEMA,
     )
+    _async_start_auto_discovery(hass)
     return True
+
+
+# ---------------------------------------------------------------------- #
+# Automatic discovery (v1.6.6)
+# Pattern reference "raylogic" integration ke AUTO_SCAN se liya (wahan kuch
+# nahi badla): pehla scan AUTO_SCAN_FIRST_DELAY baad, phir har
+# AUTO_SCAN_INTERVAL. Har naya module "Discovered" card (integration_
+# discovery flow) banta hai - user bas "Add" dabata hai.
+# ---------------------------------------------------------------------- #
+_AUTO_SCAN_KEY = f"{DOMAIN}_auto_scan"
+
+
+@callback
+def _async_start_auto_discovery(hass: HomeAssistant) -> None:
+    if hass.data.get(_AUTO_SCAN_KEY):
+        return
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    async def _run(_now=None) -> None:
+        await async_auto_discovery_scan(hass)
+
+    unsubs = [
+        async_track_time_interval(
+            hass, _run, timedelta(seconds=AUTO_SCAN_INTERVAL),
+            name="raylogic_mod auto discovery",
+        ),
+        async_call_later(hass, AUTO_SCAN_FIRST_DELAY, _run),
+    ]
+
+    @callback
+    def _stop(_event=None) -> None:
+        for unsub in unsubs:
+            unsub()
+        unsubs.clear()
+        hass.data.pop(_AUTO_SCAN_KEY, None)
+
+    hass.data[_AUTO_SCAN_KEY] = {"stop": _stop, "running": False, "last": None}
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
+
+
+def auto_discovery_enabled(hass: HomeAssistant) -> bool:
+    """Poori integration ke liye ek setting: kisi bhi device ke Configure
+    me "Auto-discover" band kiya ho to background scan band."""
+    entries = [
+        e for e in hass.config_entries.async_entries(DOMAIN)
+        if e.source != SOURCE_IGNORE
+    ]
+    return bool(entries) and all(
+        e.options.get(CONF_AUTO_DISCOVERY, True) is not False for e in entries
+    )
+
+
+async def async_auto_discovery_scan(hass: HomeAssistant) -> int:
+    """Ek background scan. Lautata hai kitne NAYE "Discovered" card bane.
+    Configured (raylogic_mod + raylogic) aur ignored hosts ko chhuta bhi
+    nahi; HA khud duplicate cards (same unique_id) abort kar deta hai."""
+    state = hass.data.get(_AUTO_SCAN_KEY)
+    if state is None or state["running"] or not auto_discovery_enabled(hass):
+        return 0
+    state["running"] = True
+    try:
+        subnets = await discovery.async_auto_subnets(hass, AUTO_SCAN_MAX_SUBNETS)
+        skip = discovery.configured_hosts(hass) | discovery.ignored_hosts(hass)
+        hits = await discovery.async_scan(subnets, skip=skip)
+        started = 0
+        for hit in hits:
+            try:
+                res = await hass.config_entries.flow.async_init(
+                    DOMAIN,
+                    context={"source": SOURCE_INTEGRATION_DISCOVERY},
+                    data=hit,
+                )
+                if res.get("type") != "abort":
+                    started += 1
+            except Exception:  # ek kharab hit baaki ko na roke
+                _LOGGER.debug("discovery flow for %s failed", hit.get("host"), exc_info=True)
+        state["last"] = {"subnets": subnets, "hits": len(hits), "new": started}
+        _LOGGER.debug(
+            "Raylogic MOD auto-discovery: subnets %s, %d module(s) answered, %d new card(s)",
+            subnets, len(hits), started,
+        )
+        if started:
+            _LOGGER.info(
+                "Raylogic MOD auto-discovery: %d naya module mila - Settings > "
+                "Devices & services me 'Discovered' card par Add dabao: %s",
+                started, ", ".join(discovery.describe(h) for h in hits),
+            )
+        return started
+    except Exception:
+        _LOGGER.debug("Raylogic MOD auto-discovery scan failed", exc_info=True)
+        return 0
+    finally:
+        state["running"] = False
 
 
 def loaded_devices(hass: HomeAssistant) -> list[RaylogicModDevice]:

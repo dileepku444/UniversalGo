@@ -794,3 +794,15 @@ def merge_scene_maps(option_values) -> dict:
         for area, scenes in parse_scene_map(text).items():
             merged.setdefault(area, set()).update(scenes)
     return {area: sorted(scenes) for area, scenes in sorted(merged.items())}
+
+
+# ------------------------------------------------------------------ #
+# Automatic discovery (v1.6.6) - background LAN scan
+# Reference "raylogic" integration ka AUTO_SCAN pattern (sirf padha gaya,
+# wahan kuch nahi badla): HA start ke thodi der baad pehla scan, phir
+# fixed interval par. Har naya module HA me "Discovered" card ban jaata hai.
+# ------------------------------------------------------------------ #
+AUTO_SCAN_FIRST_DELAY = 60        # s - HA startup ko dhima na kare
+AUTO_SCAN_INTERVAL = 1800         # s - 30 min (user ki choice)
+AUTO_SCAN_MAX_SUBNETS = 4         # har scan me max subnets (~1000 hosts)
+CONF_AUTO_DISCOVERY = "auto_discovery"

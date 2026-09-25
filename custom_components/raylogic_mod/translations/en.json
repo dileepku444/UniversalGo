@@ -47,6 +47,10 @@
           "channel_3_ctc_mode": "Channel 3 CTC Driver Mode (only if Channel 3 Type = ctc)",
           "channel_4_ctc_mode": "Channel 4 CTC Driver Mode (only if Channel 4 Type = ctc)"
         }
+      },
+      "discovery_confirm": {
+        "title": "New Raylogic MOD module found",
+        "description": "{name}\n\nIs module ko Home Assistant me add karna hai? Agle form me Model, Area aur First Channel pehle se bhare honge - sirf channel types (relay/dimmer/fan/curtain/ctc) check karke submit karo."
       }
     },
     "error": {
@@ -58,8 +62,10 @@
       "host_in_other_integration": "Ye IP pehle se 'raylogic' (main/DIN) integration me add hai. Ek hi module ko dono integrations me add mat karo - ek device par do TCP connections conflict karte hain."
     },
     "abort": {
-      "already_configured": "This Raylogic device is already configured."
-    }
+      "already_configured": "This Raylogic device is already configured.",
+      "already_in_progress": "Is module ka add-flow pehle se khula hai."
+    },
+    "flow_title": "{name}"
   },
   "options": {
     "step": {
@@ -79,7 +85,8 @@
           "channel_2_ctc_mode": "Channel 2 CTC Driver Mode",
           "channel_3_ctc_mode": "Channel 3 CTC Driver Mode",
           "channel_4_ctc_mode": "Channel 4 CTC Driver Mode",
-          "scene_counts": "Area scenes (e.g. 12:1,2,3; 5:1,4)"
+          "scene_counts": "Area scenes (e.g. 12:1,2,3; 5:1,4)",
+          "auto_discovery": "Auto-discover new modules (background LAN scan every 30 min, whole integration)"
         }
       }
     },

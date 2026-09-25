@@ -133,6 +133,10 @@ _LINE_END_RE = re.compile(rb"[\r\n]")
 _RX_LINE_LIMIT = 2 ** 16
 # P3: "*AR=" / "+AR40=" jaisa frame-type token (unknown types log-once ke liye)
 _FRAME_TYPE_RE = re.compile(r"[*+?][A-Z]{2}\d{0,2}=")
+# v1.6.5: *AZ= status se kelvin tabhi update karo jab dono channel ka total
+# output kam se kam itna ho (~10% brightness) - iske neeche byte quantization
+# colour ko nasht kar deta hai (1% par ek channel round hokar off).
+_AZ_MIN_OUTPUT_FOR_KELVIN = 0.10
 
 # SCALE FIX: pehle koi limit nahi thi ki ek saath kitne devices apna TCP
 # connect() try kar sakte hain - HA startup par (sab config entries
@@ -1932,9 +1936,30 @@ class RaylogicModDevice:
         frac = (level - CTC_SINGLE_CT_MIN_LEVEL) / (CTC_SINGLE_CT_MAX_LEVEL - CTC_SINGLE_CT_MIN_LEVEL)
         return round(CTC_MIN_KELVIN + frac * (CTC_MAX_KELVIN - CTC_MIN_KELVIN))
 
-    def _double_warm_level_to_kelvin(self, warm_level: int) -> int:
-        warm_level = max(1, min(255, warm_level))
-        warm_frac = (256 - warm_level) / 255
+    @staticmethod
+    def _double_levels_to_kelvin(cool_level: int, warm_level: int) -> Optional[int]:
+        """*AZ= ke cool + warm level bytes se colour temperature (v1.6.5).
+
+        Encoder (_send_ctc_double) har channel ko colour AUR brightness dono
+        se scale karta hai: output = share x brightness, byte = 256 - output
+        x 255, 0xFF = off. Pehle yahan sirf WARM byte se kelvin nikalta tha -
+        brightness 100% se kam hote hi galat (2700K @50% -> 4593K), aur agla
+        brightness-only command wahi galat kelvin bhej kar light ka rang
+        badal deta tha (simulator se confirm). Ab dono channel ka output
+        nikaal kar unka RATIO lete hain - brightness cancel ho jaati hai.
+        0xFF = exactly 0 output (pehle full cool 6485K padhta tha, ab 6500K).
+        Dono off, ya itna dim ki colour decode hi na ho -> None: caller
+        pichhla kelvin rakhe."""
+        def out(level: int) -> float:
+            return 0.0 if level >= 0xFF else (256 - max(1, level)) / 255
+        cool, warm = out(cool_level), out(warm_level)
+        # Bahut kam brightness par byte me colour ki jaankari hi nahi bachti
+        # (1% par ek channel round hokar "off" ho jaata hai) - wahan andaaza
+        # store karne se agla command rang badal deta. 10% se kam total
+        # output par None: caller pichhla (sahi) kelvin rakhta hai.
+        if cool + warm < _AZ_MIN_OUTPUT_FOR_KELVIN:
+            return None
+        warm_frac = warm / (cool + warm)
         return round(CTC_MAX_KELVIN - warm_frac * (CTC_MAX_KELVIN - CTC_MIN_KELVIN))
 
     def _find_ctc_channel(
@@ -2027,7 +2052,7 @@ class RaylogicModDevice:
             if b[3] != b[1] + 1:
                 return
             area = b[0]
-            warm_level = b[4]
+            cool_level, warm_level = b[2], b[4]
             pct = b[6]
             ch_num = self._find_ctc_channel(
                 area, CTC_MODE_DOUBLE, wire_channel=b[1],
@@ -2036,11 +2061,10 @@ class RaylogicModDevice:
                 return
             brightness = max(0, min(255, round(pct * 255 / 100)))
             st = self.channel_states.setdefault(ch_num, {})
-            st.update({
-                "on": brightness > 0,
-                "brightness": brightness,
-                "color_temp_kelvin": self._double_warm_level_to_kelvin(warm_level),
-            })
+            st.update({"on": brightness > 0, "brightness": brightness})
+            kelvin = self._double_levels_to_kelvin(cool_level, warm_level)
+            if kelvin is not None:      # off frame: pichhla colour yaad rakho
+                st["color_temp_kelvin"] = kelvin
             if self.state_callback:
                 self.state_callback(self.ip, ch_num, st)
         except Exception as exc:

@@ -14,7 +14,7 @@ from homeassistant.helpers import selector
 from .const import (
     DEFAULT_PORT, DOMAIN, AREA_MAX, LEGACY_DEFAULT_AREA, CLOSE_TIMEOUT,
     DEVICE_MODELS, DEFAULT_MODEL, MODEL_MOD2U, MODEL_MOD4U, MODEL_MOD2F,
-    CONF_SCENE_COUNTS, parse_scene_map,
+    CONF_SCENE_COUNTS, parse_scene_map, CONF_AUTO_DISCOVERY,
 )
 from . import discovery
 
@@ -216,6 +216,45 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }),
             description_placeholders={"count": str(len(self._hits))},
+        )
+
+    # ------------------------------------------------ integration_discovery
+    async def async_step_integration_discovery(self, discovery_info: dict) -> FlowResult:
+        """v1.6.6: background auto-scan (__init__.async_auto_discovery_scan)
+        ne naya module paaya -> HA me "Discovered" card. unique_id wahi
+        host_port jo manual add banata hai, isliye add hone ke baad card
+        khud hat jaata hai, aur "Ignore" dabane par dobara nahi aata."""
+        host = str(discovery_info.get("host", "")).strip()
+        port = int(discovery_info.get("port", DEFAULT_PORT))
+        if not host or host in discovery.configured_hosts(self.hass):
+            return self.async_abort(reason="already_configured")
+        await self.async_set_unique_id(f"{host}_{port}")
+        self._abort_if_unique_id_configured()
+        self._hits = [dict(discovery_info)]
+        self.context["title_placeholders"] = {"name": discovery.describe(discovery_info)}
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_discovery_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Card par "Add" -> yahan confirm. Model pata ho to host/model form
+        skip karke seedha (validation ke saath) pre-filled channels form -
+        MOD channel types device khud nahi batata, wo user chunta hai."""
+        hit = self._hits[0]
+        if user_input is not None:
+            self._suggest = {CONF_HOST: hit["host"], CONF_PORT: hit.get("port", DEFAULT_PORT)}
+            if hit.get("area") is not None:
+                self._suggest[CONF_LEGACY_AREA] = hit["area"]
+                self._suggest[CONF_CHANNEL_START] = hit["channel_start"]
+            if hit.get("model"):
+                self._suggest[CONF_DEVICE_MODEL] = hit["model"]
+                return await self.async_step_manual({
+                    CONF_HOST: hit["host"],
+                    CONF_PORT: hit.get("port", DEFAULT_PORT),
+                    CONF_DEVICE_MODEL: hit["model"],
+                })
+            return await self.async_step_manual()
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            description_placeholders={"name": discovery.describe(hit)},
         )
 
     async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -421,6 +460,11 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
             ),
         }
         fields.update(_channels_schema_fields(model, current))
+        # v1.6.6: background auto-discovery (poori integration ke liye -
+        # kisi bhi device par band karo to scan band).
+        fields[
+            vol.Optional(CONF_AUTO_DISCOVERY, default=current.get(CONF_AUTO_DISCOVERY, True))
+        ] = selector.BooleanSelector()
         # v1.6.0: Raylogic GO app ke area scenes, e.g. "12:1,2,3; 5:1,4".
         # Kisi bhi EK device par daalo - saare devices ka union banta hai.
         fields[
