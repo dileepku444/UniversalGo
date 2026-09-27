@@ -1,20 +1,22 @@
 """LAN discovery for Raylogic MOD2U / MOD4U / MOD2F modules (v1.6.0).
 
-Raylogic modules koi standard discovery (mDNS/SSDP/broadcast) nahi karte -
-reference "raylogic" integration ke live captures me confirm hua. Lekin har
-module TCP 5550 par sunta hai aur connect hote hi apna "*KA=" identity frame
-khud bhejta hai. Isliye subnet ke har host par ek chhota TCP connect karke
-jo Raylogic frame bheje wahi "hit" hai.
+Raylogic modules do not implement any standard discovery (mDNS/SSDP/
+broadcast) - confirmed by live captures made for the reference "raylogic"
+integration. However, every module listens on TCP 5550 and sends its own
+"*KA=" identity frame as soon as a client connects. So a short TCP connect
+to every host of the subnet is made, and any host that sends a Raylogic
+frame is a "hit".
 
-MOD ka *KA= payload apna Area aur channel range bhi batata hai (wahi decode
-jo protocol._parse_ka_identity use karta hai), isliye scan hit se model
-(2 ch = MOD2U, 4 ch = MOD4U, 1 ch = MOD2F), Area aur First Channel Number
-bhi suggest ho jaate hain.
+A MOD module's *KA= payload also reports its Area and channel range (the
+same decoding used by protocol._parse_ka_identity), so a scan hit also
+suggests the model (2 ch = MOD2U, 4 ch = MOD4U, 1 ch = MOD2F), the Area and
+the First Channel Number.
 
-Safety: jo hosts pehle se HA me configured hain (raylogic_mod YA reference
-"raylogic" integration me) unhe scan chhoota hi nahi - taaki live
-connection se koi takraav na ho. Scan sirf user ke kehne par (Add device ->
-Scan network) chalta hai, background me kabhi nahi.
+Safety: hosts that are already configured in Home Assistant (in raylogic_mod
+OR in the reference "raylogic" integration) are never touched by the scan,
+so it can never interfere with a live connection. The scan runs when the
+user chooses Add device -> Scan network, and (since v1.6.6) as the periodic
+background auto-discovery started from __init__.py.
 """
 from __future__ import annotations
 
@@ -30,17 +32,17 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sirf asli Raylogic frame hit maana jaata hai: "<node>,*KA=..." (keepalive,
-# bina message number) ya "<node>,<msg>,*AR=..." jaisa. 5550 par koi aur
-# appliance ho to ignore.
+# Only a genuine Raylogic frame counts as a hit: "<node>,*KA=..." (keepalive,
+# no message number) or something like "<node>,<msg>,*AR=...". Any other
+# appliance listening on 5550 is ignored.
 _FRAME_RE = re.compile(r"^(\d{1,3}),(?:(\d+),)?([*+][A-Z]{2}\d{0,2}=)(.*)$")
 
-CONNECT_TIMEOUT = 1.5     # LAN host SYN ka jawab isse kaafi pehle deta hai
-# Idle module har ~6s me *KA= bhejta hai - usse thoda zyada ruko; KA aate hi
-# turant ruk jaate hain.
+CONNECT_TIMEOUT = 1.5     # a LAN host answers a SYN well within this
+# An idle module sends *KA= about every 6 s - wait slightly longer than that;
+# reading stops immediately once a KA arrives.
 BANNER_TIMEOUT = 7.5
-MAX_CONCURRENCY = 64      # 254 hosts ~8s me
-MAX_HOSTS = 1024          # galti se bhi /22 se bada scan nahi
+MAX_CONCURRENCY = 64      # 254 hosts in ~8 s
+MAX_HOSTS = 1024          # never scan more than a /22, even by mistake
 
 _COUNT_TO_MODEL = {
     info["channel_count"]: key for key, info in DEVICE_MODELS.items()
@@ -48,12 +50,12 @@ _COUNT_TO_MODEL = {
 
 
 def decode_mod_ka(payload: str) -> dict | None:
-    """MOD *KA= payload -> {"area", "start", "end"} (ya None).
+    """MOD *KA= payload -> {"area", "start", "end"} (or None).
 
         *KA=<xx>-<ctr:3><n:1><AREA:2h><01><0><START:2h><END:2h>0000
         e.g. *KA=21-05421001001020000 -> area 16, channels 1-2 (MOD2U)
 
-    protocol._parse_ka_identity jaisa hi layout/validation."""
+    Same layout and validation as protocol._parse_ka_identity."""
     if "-" not in payload:
         return None
     body = payload.split("-", 1)[1].strip()
@@ -71,8 +73,8 @@ def decode_mod_ka(payload: str) -> dict | None:
 
 
 def parse_banner(lines: list[str]) -> dict | None:
-    """Connect ke baad module ke pehle frames -> hit dict, ya None agar
-    koi bhi Raylogic frame nahi."""
+    """First frames sent by a module after connecting -> hit dict, or None
+    if none of them is a Raylogic frame."""
     info: dict = {"node": None, "area": None, "channel_start": None,
                   "channel_count": None, "model": None}
     hit = False
@@ -96,7 +98,7 @@ def parse_banner(lines: list[str]) -> dict | None:
 async def async_probe_host(host: str, port: int = DEFAULT_PORT,
                            connect_timeout: float = CONNECT_TIMEOUT,
                            banner_timeout: float = BANNER_TIMEOUT) -> dict | None:
-    """Ek baar connect, module jo bheje wo padho, band karo. None = Raylogic nahi."""
+    """Connect once, read what the module sends, close. None = not a Raylogic module."""
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), connect_timeout)
@@ -108,13 +110,13 @@ async def async_probe_host(host: str, port: int = DEFAULT_PORT,
     buf = b""
     try:
         while len(lines) < 12 and len(buf) < 4096:
-            # "\r", "\n" ya "\r\n" - protocol._read_frame jaisa (v1.6.4)
+            # "\r", "\n" or "\r\n" - same as protocol._read_frame (v1.6.4)
             parts = re.split(rb"[\r\n]", buf)
-            buf = parts.pop()               # adhoori line
+            buf = parts.pop()               # incomplete line
             new = [p.decode(errors="replace").strip() for p in parts]
             lines.extend(x for x in new if x)
             if any("*KA=" in x for x in new):
-                break   # identity frame mil gaya
+                break   # identity frame received
             left = deadline - loop.time()
             if left <= 0:
                 break
@@ -126,8 +128,8 @@ async def async_probe_host(host: str, port: int = DEFAULT_PORT,
                 break
             buf += chunk
     finally:
-        # Close bhi hard-capped (config_flow.validate_connection jaisa) -
-        # device FIN na bheje to scan atakna nahi chahiye.
+        # Closing is hard-capped as well (like config_flow.validate_connection)
+        # so the scan never hangs if the device does not send a FIN.
         try:
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), float(CLOSE_TIMEOUT))
@@ -141,7 +143,7 @@ async def async_probe_host(host: str, port: int = DEFAULT_PORT,
 
 
 def hosts_in(subnets: list[str]) -> list[str]:
-    """CIDR strings -> host addresses (dedup, capped, sirf IPv4)."""
+    """CIDR strings -> host addresses (deduplicated, capped, IPv4 only)."""
     out: list[str] = []
     seen: set[str] = set()
     for cidr in subnets:
@@ -161,8 +163,8 @@ def hosts_in(subnets: list[str]) -> list[str]:
 
 
 def _fallback_subnet() -> list[str]:
-    """Default-route wale interface ka /24 (UDP 'connect' koi packet nahi
-    bhejta, sirf source address chunta hai)."""
+    """The /24 of the default-route interface (a UDP 'connect' sends no
+    packet, it only selects the source address)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -176,7 +178,7 @@ def _fallback_subnet() -> list[str]:
 
 
 async def async_local_subnets(hass) -> list[str]:
-    """HA ke har enabled IPv4 adapter ka CIDR (bahut bada LAN ho to /24)."""
+    """CIDR of every enabled IPv4 adapter in Home Assistant (/24 for very large LANs)."""
     subnets: list[str] = []
     try:
         from homeassistant.components.network import async_get_adapters
@@ -200,7 +202,7 @@ async def async_local_subnets(hass) -> list[str]:
     return subnets
 
 
-OTHER_DOMAIN = "raylogic"   # main/DIN integration - sirf padhte hain
+OTHER_DOMAIN = "raylogic"   # main/DIN integration - read only
 
 
 def _entry_hosts(hass, domain: str) -> set[str]:
@@ -213,22 +215,22 @@ def _entry_hosts(hass, domain: str) -> set[str]:
 
 
 def other_integration_hosts(hass) -> set[str]:
-    """'raylogic' (main) integration me configured IPs. Same module dono
-    integrations me ho to do TCP connections ek hi device par khulte hain."""
+    """IPs configured in the 'raylogic' (main) integration. If the same module
+    were configured in both integrations, two TCP connections would be opened
+    to one device."""
     return _entry_hosts(hass, OTHER_DOMAIN)
 
 
 def configured_hosts(hass) -> set[str]:
-    """Jo IPs pehle se HA me hain - raylogic_mod AUR 'raylogic' dono ke.
-    Scan inse kabhi connect nahi karta."""
+    """IPs already configured in Home Assistant, in raylogic_mod AND in
+    'raylogic'. The scan never connects to them."""
     return _entry_hosts(hass, "raylogic_mod") | other_integration_hosts(hass)
 
 
 def ignored_hosts(hass) -> set[str]:
-    """HA ke "Discovered" card par user ne "Ignore" dabaya ho to entry
-    source=ignore ke saath bachti hai (bina data ke) - host uske unique_id
-    ("<host>_<port>") se nikalte hain, taaki auto-scan use dobara chhue bhi
-    nahi."""
+    """When the user presses "Ignore" on a "Discovered" card, an entry with
+    source=ignore remains (without data). The host is taken from its
+    unique_id ("<host>_<port>") so the auto-scan never touches it again."""
     hosts: set[str] = set()
     for e in hass.config_entries.async_entries("raylogic_mod", include_ignore=True):
         if e.source == "ignore" and e.unique_id and "_" in e.unique_id:
@@ -237,11 +239,11 @@ def ignored_hosts(hass) -> set[str]:
 
 
 async def async_auto_subnets(hass, max_subnets: int = 4) -> list[str]:
-    """Background scan ke subnets - user ko kuch type nahi karna padta:
-      1. HA ke apne enabled IPv4 adapters (async_local_subnets jaisa)
-      2. har configured module (raylogic_mod + raylogic) ka /24 - modules
-         kisi doosre VLAN par hon jahan HA route karta hai, to bhi cover
-    Duplicates hataye, max `max_subnets`, total hosts <= MAX_HOSTS."""
+    """Subnets for the background scan - the user does not have to type anything:
+      1. Home Assistant's own enabled IPv4 adapters (as in async_local_subnets)
+      2. the /24 of every configured module (raylogic_mod + raylogic), which
+         also covers modules on another VLAN that Home Assistant routes to
+    Duplicates removed, at most `max_subnets`, total hosts <= MAX_HOSTS."""
     subnets = list(await async_local_subnets(hass))
     for h in sorted(configured_hosts(hass)):
         try:
@@ -267,7 +269,7 @@ async def async_auto_subnets(hass, max_subnets: int = 4) -> list[str]:
 async def async_scan(subnets: list[str], *, port: int = DEFAULT_PORT,
                      skip: set[str] | None = None,
                      concurrency: int = MAX_CONCURRENCY) -> list[dict]:
-    """Subnets ke har host ko probe karo; Raylogic hits IP order me."""
+    """Probe every host of the subnets; returns the Raylogic hits in IP order."""
     skip = skip or set()
     targets = [h for h in hosts_in(subnets) if h not in skip]
     sem = asyncio.Semaphore(concurrency)
@@ -286,7 +288,7 @@ async def async_scan(subnets: list[str], *, port: int = DEFAULT_PORT,
 
 
 def describe(hit: dict) -> str:
-    """Pick-list ke liye ek line: IP, node, model, area, channels."""
+    """One line for the pick-list: IP, node, model, area, channels."""
     parts = [hit["host"]]
     if hit.get("node"):
         parts.append(f"node {hit['node']}")

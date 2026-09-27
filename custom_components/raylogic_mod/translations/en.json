@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Add Raylogic MOD2U / MOD4U / MOD2F",
-        "description": "Raylogic modules network par khud announce nahi karte - HA se LAN scan karwao (recommended) ya IP address khud daalo.",
+        "description": "Raylogic modules do not announce themselves on the network - let HA scan the LAN (recommended) or enter the IP address manually.",
         "menu_options": {
           "scan": "Scan network for Raylogic MOD modules",
           "manual": "Enter IP address manually"
@@ -11,21 +11,21 @@
       },
       "scan": {
         "title": "Scan network",
-        "description": "Neeche diye subnet(s) ke har host ko port 5550 par check kiya jaayega (~10 s). Jo devices pehle se HA me add hain (raylogic_mod ya raylogic) unhe chhua nahi jaata. Modules kisi aur subnet par hon to hi list badlo (comma-separated CIDR, e.g. 192.168.120.0/24).",
+        "description": "Every host in the subnet(s) below will be checked on port 5550 (~10 s). Devices already added to HA (raylogic_mod or raylogic) are not touched. Only change the list if the modules are on a different subnet (comma-separated CIDR, e.g. 192.168.120.0/24).",
         "data": {
           "subnets": "Subnet(s) to scan"
         }
       },
       "pick": {
         "title": "Raylogic modules found",
-        "description": "{count} module(s) ne jawab diya. Ek chuno - agla form uske detected Model/Area/First Channel se pre-filled khulega (check karke confirm karo). Agle module ke liye Add Integration dobara chalao.",
+        "description": "{count} module(s) responded. Choose one - the next form opens pre-filled with its detected Model/Area/First Channel (review and confirm). Run Add Integration again for the next module.",
         "data": {
           "device": "Module"
         }
       },
       "manual": {
         "title": "Add Raylogic MOD2U / MOD4U / MOD2F",
-        "description": "Device ka IP address daalo, aur Device Model chuno - MOD2U (2 channel, 1 pair), MOD4U (4 channel, 2 pairs), ya MOD2F (single-channel, fixed Fan type). Agla step aapke chune hue model ke hisaab se sirf utne hi channel fields dikhayega (MOD2F ke liye koi Type dropdown nahi dikhega - wo hamesha Fan hi hota hai, sirf Area aur channel number daalna hai).",
+        "description": "Enter the device's IP address and choose the Device Model - MOD2U (2 channels, 1 pair), MOD4U (4 channels, 2 pairs) or MOD2F (single channel, fixed Fan type). The next step shows only as many channel fields as the selected model has (no Type dropdown is shown for the MOD2F - it is always a Fan; only the Area and channel number need to be entered).",
         "data": {
           "host": "Device IP Address",
           "port": "Port (default 5550)",
@@ -34,7 +34,7 @@
       },
       "channels": {
         "title": "Configure channels",
-        "description": "Area wahi daalo jo Mod Settings screen mein dikhta hai (e.g. 12 ya 16). Area = 0 sirf tab chalega jab sabhi channel 'relay' hon (HA khud seekh lega app/switch se ek baar toggle karke) - Dimmer/Fan/Curtain/CTC ke liye Area zaroor manually dena hoga. Channels 2 PAIRS mein hote hain: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) (MOD2U par sirf Pair 1 exist karta hai). CTC (colour-temperature light) aur Curtain DONO apni pair ke dono physical channels internally use karte hain - agar Channel 1 Type = 'ctc' ya 'curtain' chuno to Channel 2 Type field automatically ignore ho jaata hai (ek hi entity banti hai), aur waisa hi Channel 3/4 ke liye. CTC choose karne par uska Driver Mode bhi batao - 'single' (app mein 'Single Driver' checked) ya 'double'.",
+        "description": "Enter the Area shown on the Mod Settings screen (e.g. 12 or 16). Area = 0 only works when all channels are 'relay' (HA learns them by itself after each one is toggled once from the app/switch) - Dimmer/Fan/Curtain/CTC require the Area to be entered manually. Channels come in 2 PAIRS: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) (only Pair 1 exists on the MOD2U). CTC (colour-temperature light) and Curtain BOTH use both physical channels of their pair internally - if Channel 1 Type = 'ctc' or 'curtain' is chosen, the Channel 2 Type field is automatically ignored (a single entity is created), and the same applies to Channel 3/4. When choosing CTC, also select its Driver Mode - 'single' ('Single Driver' checked in the app) or 'double'.",
         "data": {
           "legacy_area": "Area (0 = relay-only auto-learn, 1-16 = manual)",
           "channel_start": "First Channel Number (usually 1, but check Raylogic GO app if channels don't start at 1)",
@@ -50,20 +50,20 @@
       },
       "discovery_confirm": {
         "title": "New Raylogic MOD module found",
-        "description": "{name}\n\nIs module ko Home Assistant me add karna hai? Agle form me Model, Area aur First Channel pehle se bhare honge - sirf channel types (relay/dimmer/fan/curtain/ctc) check karke submit karo."
+        "description": "{name}\n\nAdd this module to Home Assistant? Model, Area and First Channel will be pre-filled in the next form - just review the channel types (relay/dimmer/fan/curtain/ctc) and submit."
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to device. Check IP address and ensure device is powered on.",
       "unknown": "Unexpected error. Check logs for details.",
-      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC channels ke liye Area (0 nahi) manually dena zaroori hai - auto-learn sirf Relay ke liye kaam karta hai.",
-      "bad_subnet": "Ek ya zyada valid IPv4 subnet CIDR form me daalo, e.g. 192.168.1.0/24 (max /22).",
-      "no_devices_found": "Port 5550 par koi naya Raylogic module nahi mila. Check karo ki wo on hai aur isi network par hai (pehle se add kiye hue list nahi hote).",
-      "host_in_other_integration": "Ye IP pehle se 'raylogic' (main/DIN) integration me add hai. Ek hi module ko dono integrations me add mat karo - ek device par do TCP connections conflict karte hain."
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC channels require the Area (not 0) to be entered manually - auto-learn only works for Relay.",
+      "bad_subnet": "Enter one or more valid IPv4 subnets in CIDR form, e.g. 192.168.1.0/24 (max /22).",
+      "no_devices_found": "No new Raylogic module was found on port 5550. Check that it is powered on and on this network (modules that are already added are not listed).",
+      "host_in_other_integration": "This IP is already added in the 'raylogic' (main/DIN) integration. Do not add the same module to both integrations - two TCP connections to one device conflict with each other."
     },
     "abort": {
       "already_configured": "This Raylogic device is already configured.",
-      "already_in_progress": "Is module ka add-flow pehle se khula hai."
+      "already_in_progress": "An add flow for this module is already in progress."
     },
     "flow_title": "{name}"
   },
@@ -71,7 +71,7 @@
     "step": {
       "init": {
         "title": "Configure Raylogic device",
-        "description": "Channel type (relay/dimmer/fan/curtain/ctc), Area, ya channel numbering yahan se badlo - device delete karne ki zaroorat nahi. Device Model yahan se badla nahi ja sakta - model change karna ho to device delete karke naya add karo. Yaad rakho: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) - Curtain/CTC ek pair ka dono channel consume karte hain. Area scenes: Raylogic GO app ke area scenes 'area:scene,scene; area:scene' format me (e.g. '12:1,2,3; 5:1,4') - kisi bhi EK device par daalna kaafi hai, har area ke liye scene entities + ek scene dropdown banega. Khaali = koi scene nahi.",
+        "description": "Change the channel type (relay/dimmer/fan/curtain/ctc), Area or channel numbering here - there is no need to delete the device. The Device Model cannot be changed here - to change the model, delete the device and add it again. Remember: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) - Curtain/CTC consume both channels of a pair. Area scenes: the Raylogic GO app's area scenes in the format 'area:scene,scene; area:scene' (e.g. '12:1,2,3; 5:1,4') - entering them on any ONE device is enough; scene entities + a scene dropdown are created for each area. Empty = no scenes.",
         "data": {
           "host": "Device IP Address",
           "port": "Port (default 5550)",
@@ -91,9 +91,9 @@
       }
     },
     "error": {
-      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC ke liye Area manually dena zaroori hai (0 sirf Relay LEARN mode ke liye chalta hai).",
-      "bad_scene_map": "Area scenes samajh nahi aaye - format 'area:scene,scene; area:scene' hai (area 1-16, scene 1-64), e.g. '12:1,2,3; 5:1,4'.",
-      "host_in_other_integration": "Ye IP pehle se 'raylogic' (main/DIN) integration me add hai - MOD entry ko us module par point nahi kar sakte (ek device par do TCP connections conflict karte hain)."
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC require the Area to be entered manually (0 only works for Relay LEARN mode).",
+      "bad_scene_map": "Could not parse the area scenes - the format is 'area:scene,scene; area:scene' (area 1-16, scene 1-64), e.g. '12:1,2,3; 5:1,4'.",
+      "host_in_other_integration": "This IP is already added in the 'raylogic' (main/DIN) integration - the MOD entry cannot point to that module (two TCP connections to one device conflict with each other)."
     }
   },
   "services": {

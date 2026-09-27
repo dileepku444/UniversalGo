@@ -35,30 +35,30 @@ CONF_CH4_CTC_MODE = "channel_4_ctc_mode"
 _ALL_CH_TYPE_KEYS = (CONF_CH1_TYPE, CONF_CH2_TYPE, CONF_CH3_TYPE, CONF_CH4_TYPE)
 _ALL_CH_CTC_MODE_KEYS = (CONF_CH1_CTC_MODE, CONF_CH2_CTC_MODE, CONF_CH3_CTC_MODE, CONF_CH4_CTC_MODE)
 
-# MOD2U/MOD4U khud apna channel-type broadcast nahi karta (RE8 ke BR40
-# jaisa readback confirm nahi hua) - type sirf Raylogic GO app se set
-# hota hai. Isliye auto-detect ki jagah, jo type aapne app mein (Select
-# Type screen) choose kiya hai wahi yahan bata do - relay/dimmer/fan/
-# curtain/ctc sab ke confirmed *AR=/*AZ= formats implement ho chuke hain.
+# MOD2U/MOD4U do not broadcast their own channel type (no readback like
+# the RE8's BR40 has been confirmed) - the type is only set from the
+# Raylogic GO app. So instead of auto-detection, enter here the type chosen
+# in the app (Select Type screen). The confirmed *AR=/*AZ= formats for
+# relay/dimmer/fan/curtain/ctc are all implemented.
 CHANNEL_TYPE_OPTIONS = ["relay", "dimmer", "fan", "curtain", "ctc"]
 
-# CTC ka Single/Double Driver checkbox (Mod Settings screen mein) - konsa
-# wire-format (*AR= sub-channel vs *AZ= combined) use hoga, wahi yahan bhi
-# batana hoga. CTC ek logical entity DONO physical channels (apni pair ke)
-# internally use karta hai, isliye jis bhi channel ko 'ctc' banaoge uska
-# CTC-mode yahin daalna hai; us pair ke doosre channel ka Type field us
-# waqt ignore ho jata hai (ek hi CTC entity banti hai). Curtain bhi
-# PAIRED hai (same rule), lekin uska koi Driver-mode nahi hota.
+# The CTC Single/Double Driver checkbox (Mod Settings screen) decides which
+# wire format is used (*AR= sub-channel vs *AZ= combined), so it must be
+# entered here too. One logical CTC entity internally uses BOTH physical
+# channels of its pair, so enter the CTC mode on whichever channel you set
+# to 'ctc'; the Type field of the other channel of that pair is then
+# ignored (only one CTC entity is created). Curtain is PAIRED as well (same
+# rule) but has no driver mode.
 CTC_MODE_OPTIONS = ["single", "double"]
 
 DEVICE_MODEL_OPTIONS = [MODEL_MOD2U, MODEL_MOD4U, MODEL_MOD2F]
 
 
 def _default_channel_type(model: str) -> str:
-    """fixed_type models (MOD2F) ke liye 'Select Type' hota hi nahi -
-    validation ke liye us model ka fixed type hi asli/default type hai
-    (generic 'relay' default GALAT hoga: MOD2F ka Area kabhi 0/auto-learn
-    nahi ho sakta, kyunki wo Fan hai, Relay nahi)."""
+    """fixed_type models (MOD2F) have no 'Select Type' at all - for
+    validation, the model's fixed type is the real/default type (a generic
+    'relay' default would be WRONG: a MOD2F can never use Area 0/auto-learn,
+    because it is a fan, not a relay)."""
     fixed = DEVICE_MODELS.get(model, DEVICE_MODELS[DEFAULT_MODEL]).get("fixed_type")
     return fixed or "relay"
 
@@ -78,10 +78,10 @@ def _pair_count(model: str) -> int:
 
 
 def _channels_schema_fields(model: str, current: dict | None = None) -> dict:
-    """Model ke channel_count (2 ya 4) ke hisaab se sirf utne hi channel
-    type/ctc-mode fields dikhao - MOD2U par sirf 2, MOD4U par sirf 4.
-    fixed_type models (MOD2F) ke liye koi field hi nahi (channel type
-    fixed hai, user ko choose karne ki zaroorat nahi)."""
+    """Show only as many channel type/CTC-mode fields as the model's
+    channel_count (2 or 4) - 2 on a MOD2U, 4 on a MOD4U. fixed_type models
+    (MOD2F) get no fields at all (the channel type is fixed, the user does
+    not need to choose it)."""
     model_info = DEVICE_MODELS.get(model, DEVICE_MODELS[DEFAULT_MODEL])
     if model_info.get("fixed_type"):
         return {}
@@ -106,8 +106,8 @@ def _channels_schema_fields(model: str, current: dict | None = None) -> dict:
 
 
 def _coerce_numbers(user_input: dict[str, Any]) -> None:
-    """NumberSelector float lauta sakta hai (e.g. 5550.0) - int mein cast
-    karo taaki config entry aur protocol.py mein hamesha int hi ho."""
+    """NumberSelector may return a float (e.g. 5550.0) - cast to int so the
+    config entry and protocol.py always receive integers."""
     if CONF_PORT in user_input:
         user_input[CONF_PORT] = int(user_input[CONF_PORT])
     if CONF_LEGACY_AREA in user_input:
@@ -134,10 +134,10 @@ async def validate_connection(hass, host: str, port: int) -> dict:
     except Exception:
         pass
     finally:
-        # BUG FIX: pehle yahan wait_closed() unbounded tha - "Add device"
-        # wizard bhi is se bina-timeout wale close ka shikaar ho sakta tha
-        # agar device TCP connection cleanly close na kare. Ab CLOSE_TIMEOUT
-        # ke andar hard-capped hai.
+        # BUG FIX: wait_closed() used to be unbounded here - the "Add device"
+        # wizard could hang on a close without timeout if the device did not
+        # close the TCP connection cleanly. It is now hard-capped by
+        # CLOSE_TIMEOUT.
         try:
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), timeout=float(CLOSE_TIMEOUT))
@@ -152,8 +152,8 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self._data: dict[str, Any] = {}
-        # v1.6.0: network scan ke hits, aur chune hue hit se form defaults
-        # (host/port/model/area/channel_start) - manual add me khaali.
+        # v1.6.0: network scan hits, and form defaults taken from the chosen
+        # hit (host/port/model/area/channel_start) - empty for a manual add.
         self._hits: list[dict] = []
         self._suggest: dict[str, Any] = {}
 
@@ -162,12 +162,12 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return RaylogicModOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """v1.6.0: pehle poochho - network scan ya IP manually."""
+        """v1.6.0: ask first - network scan or manual IP entry."""
         return self.async_show_menu(step_id="user", menu_options=["scan", "manual"])
 
     async def async_step_scan(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Local subnet(s) ke har host ko TCP 5550 par probe karo (discovery.py).
-        Pehle se configured hosts (raylogic_mod + raylogic) skip hote hain."""
+        """Probe every host of the local subnet(s) on TCP 5550 (discovery.py).
+        Hosts that are already configured (raylogic_mod + raylogic) are skipped."""
         errors: dict[str, str] = {}
         subnets_default = ", ".join(await discovery.async_local_subnets(self.hass))
         if user_input is not None:
@@ -191,9 +191,9 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_pick(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Scan me mile modules me se ek chuno -> manual form uske detected
-        values (model/area/first channel) se pre-filled khulta hai; user
-        confirm/badal sakta hai. Connection validation wahi purana hai."""
+        """Pick one of the modules found by the scan -> the manual form opens
+        pre-filled with its detected values (model/area/first channel), which
+        the user can confirm or change. Connection validation is unchanged."""
         labels = {discovery.describe(h): h for h in self._hits}
         if user_input is not None:
             hit = labels.get(user_input.get("device"))
@@ -220,10 +220,11 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     # ------------------------------------------------ integration_discovery
     async def async_step_integration_discovery(self, discovery_info: dict) -> FlowResult:
-        """v1.6.6: background auto-scan (__init__.async_auto_discovery_scan)
-        ne naya module paaya -> HA me "Discovered" card. unique_id wahi
-        host_port jo manual add banata hai, isliye add hone ke baad card
-        khud hat jaata hai, aur "Ignore" dabane par dobara nahi aata."""
+        """v1.6.6: the background auto-scan (__init__.async_auto_discovery_scan)
+        found a new module -> "Discovered" card in Home Assistant. The
+        unique_id is the same host_port a manual add creates, so the card
+        disappears once the module is added and does not return after
+        "Ignore"."""
         host = str(discovery_info.get("host", "")).strip()
         port = int(discovery_info.get("port", DEFAULT_PORT))
         if not host or host in discovery.configured_hosts(self.hass):
@@ -235,9 +236,10 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_discovery_confirm()
 
     async def async_step_discovery_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Card par "Add" -> yahan confirm. Model pata ho to host/model form
-        skip karke seedha (validation ke saath) pre-filled channels form -
-        MOD channel types device khud nahi batata, wo user chunta hai."""
+        """"Add" on the card -> confirm here. If the model is known, the
+        host/model form is skipped and the pre-filled channels form opens
+        directly (with validation) - a MOD device does not report its channel
+        types, so the user chooses them."""
         hit = self._hits[0]
         if user_input is not None:
             self._suggest = {CONF_HOST: hit["host"], CONF_PORT: hit.get("port", DEFAULT_PORT)}
@@ -258,20 +260,19 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Step 1: host/port/device model - konsa hardware hai (MOD2U ya
-        MOD4U) pehle hi maloom hona chahiye taaki step 2 mein sirf utne hi
-        channel fields dikhein jitne us model par physically exist karte
-        hain."""
+        """Step 1: host/port/device model - the hardware (MOD2U or MOD4U)
+        must be known first so that step 2 shows only the channel fields
+        that physically exist on that model."""
         errors: dict[str, str] = {}
         if user_input is not None:
             host = str(user_input[CONF_HOST]).strip()
             user_input[CONF_HOST] = host
             port = int(user_input.get(CONF_PORT, DEFAULT_PORT))
-            # F2 (v1.6.1): ye module pehle se 'raylogic' (main/DIN)
-            # integration me hai to yahan dobara add mat hone do - warna
-            # ek hi device par do TCP connections (do integrations se) khulte.
-            # Connect karne se PEHLE check, taaki us live device ko chhuein
-            # bhi nahi.
+            # F2 (v1.6.1): if this module is already in the 'raylogic'
+            # (main/DIN) integration, do not allow adding it again here -
+            # otherwise two TCP connections (from two integrations) would be
+            # opened to one device. Checked BEFORE connecting, so that live
+            # device is never touched.
             if host in discovery.other_integration_hosts(self.hass):
                 errors["base"] = "host_in_other_integration"
             else:
@@ -284,26 +285,25 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "unknown"
                 else:
                     # BUG FIX (root cause of "HA startup slow" / duplicate
-                    # connections): pehle yahan unique_id = mac (agar *KA= line
-                    # config-flow ke 5s validation window ke andar mil jaaye)
-                    # ORR host (agar na mile) hota tha. Ye NON-DETERMINISTIC
-                    # tha - same physical device ko DO ALAG baar add karne ki
-                    # koshish mein, agar dusri baar *KA= line thodi der se aayi
-                    # (ya bilkul na aayi - network jitter, device busy jawab
-                    # dene mein kyunki ek connection pehle se khula hai), to
-                    # unique_id DIFFERENT ban jaata (mac-based vs raw host
-                    # string) - is wajah se `_abort_if_unique_id_configured()`
-                    # is duplicate ko pakad hi nahi paata tha, aur DO config
-                    # entries usi ek physical IP par ban jaate the. Dono apna
-                    # apna TCP connection kholne ki koshish karte - device
-                    # (jo shayad ek time par sirf EK client accept karta hai)
-                    # in dono ke beech confuse hokar slow/flaky rehta, HAR
-                    # startup par is contention ki wajah se retries hote,
-                    # jo poore HA boot ko slow feel karata. Ab unique_id hamesha
-                    # host:port se hi deterministically banta hai - node/mac sirf
-                    # cosmetic reference ke liye store hota hai, uniqueness ke
-                    # liye kabhi use nahi hota, isliye same IP:port ka doosra
-                    # "Add" hamesha turant abort ho jayega (already_configured).
+                    # connections): the unique_id used to be the mac (if the
+                    # *KA= line arrived within the config flow's 5 s validation
+                    # window) OR the host (if it did not). That was
+                    # NON-DETERMINISTIC: when the same physical device was added
+                    # TWICE and the *KA= line arrived late the second time (or
+                    # not at all - network jitter, or the device busy because a
+                    # connection was already open), the unique_id came out
+                    # DIFFERENT (mac-based vs raw host string). As a result
+                    # `_abort_if_unique_id_configured()` could not catch the
+                    # duplicate and TWO config entries were created for the same
+                    # physical IP. Both tried to open their own TCP connection;
+                    # the device (which may accept only ONE client at a time)
+                    # became slow/flaky switching between them, and this
+                    # contention caused retries on EVERY startup, making the
+                    # whole HA boot feel slow. The unique_id is now always built
+                    # deterministically from host:port - node/mac is stored only
+                    # as a cosmetic reference and never used for uniqueness, so
+                    # a second "Add" for the same IP:port always aborts
+                    # immediately (already_configured).
                     unique_id = f"{host}_{port}"
                     await self.async_set_unique_id(unique_id)
                     self._abort_if_unique_id_configured()
@@ -332,8 +332,8 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="manual", data_schema=schema, errors=errors)
 
     async def async_step_channels(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Step 2: Area, channel numbering, aur har channel ka type - sirf
-        model ke channel_count (2/4) jitne fields."""
+        """Step 2: Area, channel numbering and the type of each channel - only
+        as many fields as the model's channel_count (2/4)."""
         model = self._data.get(CONF_DEVICE_MODEL, DEFAULT_MODEL)
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -342,8 +342,8 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ch_types = tuple(
                 user_input.get(_ALL_CH_TYPE_KEYS[i], _default_channel_type(model)) for i in range(channel_count)
             )
-            # Dimmer/Fan/Curtain/CTC ka *AR= echo se "type" pata nahi chal
-            # sakta, isliye unke liye Area manually dena zaroori hai.
+            # The "type" of a Dimmer/Fan/Curtain/CTC channel cannot be derived
+            # from an *AR= echo, so the Area must be entered manually for them.
             if user_input[CONF_LEGACY_AREA] == 0 and any(t != "relay" for t in ch_types):
                 errors["base"] = "area_required_for_non_relay"
             else:
@@ -361,11 +361,11 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     min=0, max=AREA_MAX, mode=selector.NumberSelectorMode.BOX
                 )
             ),
-            # Kai Raylogic installations mein Area ke andar channel numbers
-            # GLOBALLY assign hote hain (har module 1 se shuru nahi hota) -
-            # agar Raylogic GO app mein aapke is module ke channels jaise
-            # "5, 6" ya "5,6,7,8" dikhte hain (1,2.. nahi), to yahan 5 daal
-            # do taaki commands sahi channel number par jaayen.
+            # In many Raylogic installations channel numbers are assigned
+            # GLOBALLY within an Area (not every module starts at 1) - if the
+            # Raylogic GO app shows this module's channels as e.g. "5, 6" or
+            # "5,6,7,8" (not 1,2..), enter 5 here so commands are sent to the
+            # correct channel numbers.
             vol.Optional(
                 CONF_CHANNEL_START, default=self._suggest.get(CONF_CHANNEL_START, 1)
             ): selector.NumberSelector(
@@ -381,18 +381,18 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class RaylogicModOptionsFlow(config_entries.OptionsFlow):
-    """'Configure' button - taaki channel type (e.g. ch4 ko dimmer banana)
-    ya Area/channel_start badalne ke liye device delete + dobara add na
-    karna pade. Device Model yahan se badla nahi ja sakta (channel-count
-    fundamentally badal jaata) - model change karna ho to device delete
-    karke naya add karo."""
+    """'Configure' button - so that changing a channel type (e.g. making ch4
+    a dimmer) or the Area/channel_start does not require deleting and
+    re-adding the device. The device model cannot be changed here (it would
+    fundamentally change the channel count) - to change the model, delete
+    the device and add it again."""
 
-    # BUG FIX (v1.6.0, live HA 2026.9 par pakda gaya): pehle yahan
-    # __init__(config_entry) me `self.config_entry = config_entry` set hota
-    # tha. Naye HA me `config_entry` ek read-only property hai jo HA khud
-    # bharta hai - us assignment se AttributeError aata tha aur "Configure"
-    # button 500 error de deta tha. Ab HA ka diya hua self.config_entry hi
-    # use hota hai.
+    # BUG FIX (v1.6.0, found on a live HA 2026.9): __init__(config_entry)
+    # used to set `self.config_entry = config_entry`. In current Home
+    # Assistant `config_entry` is a read-only property populated by HA
+    # itself - that assignment raised AttributeError and the "Configure"
+    # button returned a 500 error. The self.config_entry provided by HA is
+    # now used.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         current = {**self.config_entry.data, **self.config_entry.options}
@@ -403,8 +403,8 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
             _coerce_numbers(user_input)
             if CONF_HOST in user_input:
                 user_input[CONF_HOST] = str(user_input[CONF_HOST]).strip()
-            # v1.6.2: F2 jaisa hi block - Configure se host badal kar kisi
-            # 'raylogic' (main) wale module par point karna save hi na ho.
+            # v1.6.2: same block as F2 - changing the host in Configure to
+            # point at a module owned by 'raylogic' (main) cannot be saved.
             if user_input.get(CONF_HOST) in discovery.other_integration_hosts(self.hass):
                 return self.async_show_form(
                     step_id="init",
@@ -420,8 +420,9 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
                     data_schema=self._schema(model, current),
                     errors={"base": "area_required_for_non_relay"},
                 )
-            # v1.6.0: area scenes - kuch likha hai lekin ek bhi valid
-            # "area:scene" nahi nikla to typo hai, chup-chaap save mat karo.
+            # v1.6.0: area scenes - if something was entered but not a single
+            # valid "area:scene" could be parsed, it is a typo; do not save it
+            # silently.
             scene_text = str(user_input.get(CONF_SCENE_COUNTS, "") or "").strip()
             user_input[CONF_SCENE_COUNTS] = scene_text
             if scene_text and not parse_scene_map(scene_text):
@@ -430,14 +431,14 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
                     data_schema=self._schema(model, current),
                     errors={"base": "bad_scene_map"},
                 )
-            # NOTE: async_create_entry() sirf FlowResult banata hai -
-            # entry.options tabhi update hote hain jab HA ka flow manager
-            # is result ko process karta hai (ye function return hone ke
-            # BAAD). __init__.py ka add_update_listener (_async_update_
-            # listener) is ke baad khud reload trigger karta hai - naye
-            # options ke saath. Manual reload yahan se dobara mat karo,
-            # warna do overlapping reload chalte hain (ek stale data ke
-            # saath), jo device connection ko atka sakta hai.
+            # NOTE: async_create_entry() only builds a FlowResult -
+            # entry.options are updated when HA's flow manager processes
+            # that result (AFTER this function returns). The
+            # add_update_listener in __init__.py (_async_update_listener)
+            # then triggers a reload with the new options by itself. Do not
+            # reload manually here as well, otherwise two overlapping reloads
+            # run (one with stale data), which can stall the device
+            # connection.
             return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(step_id="init", data_schema=self._schema(model, current))
@@ -460,13 +461,13 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
             ),
         }
         fields.update(_channels_schema_fields(model, current))
-        # v1.6.6: background auto-discovery (poori integration ke liye -
-        # kisi bhi device par band karo to scan band).
+        # v1.6.6: background auto-discovery (integration-wide - turning it
+        # off on any device stops the scan).
         fields[
             vol.Optional(CONF_AUTO_DISCOVERY, default=current.get(CONF_AUTO_DISCOVERY, True))
         ] = selector.BooleanSelector()
-        # v1.6.0: Raylogic GO app ke area scenes, e.g. "12:1,2,3; 5:1,4".
-        # Kisi bhi EK device par daalo - saare devices ka union banta hai.
+        # v1.6.0: Raylogic GO app area scenes, e.g. "12:1,2,3; 5:1,4".
+        # Enter them on any ONE device - the union of all devices is used.
         fields[
             vol.Optional(CONF_SCENE_COUNTS, default=current.get(CONF_SCENE_COUNTS, ""))
         ] = selector.TextSelector()

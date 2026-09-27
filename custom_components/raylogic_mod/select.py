@@ -1,9 +1,10 @@
-"""Har Area ke liye scene dropdown - two-way scene feedback (v1.6.0).
+"""Per-area scene selector with two-way scene feedback (v1.6.0).
 
-HA Scene entities stateless hote hain (konsa active hai nahi dikha sakte),
-isliye har configured Area ke liye ek select: option chuno -> scene recall;
-keypad / Raylogic app se scene recall ho -> kisi bhi module par aaya
-*AR=000F<area><scene>00 echo is dropdown ko update kar deta hai.
+Home Assistant scene entities are stateless (they cannot show which scene is
+active), so each configured area gets a select entity: choosing an option
+recalls the scene, and when a scene is recalled from a keypad or the Raylogic
+app, the *AR=000F<area><scene>00 echo received on any module updates the
+selector.
 """
 from __future__ import annotations
 import logging
@@ -19,14 +20,14 @@ from . import async_recall_area_scene, claim_scene_host, loaded_devices
 
 _LOGGER = logging.getLogger(__name__)
 _NONE = "—"
-# Apna scene chunne ke baad itni der tak kisi DOOSRE scene ki stray/purani
-# report ko ignore karo (reference me yahi bug tha: HA se scene 2 chuna,
-# ~5s baad ek purana echo aakar dropdown ko scene 1 par le gaya).
+# After a scene is chosen here, ignore stray or stale reports of a DIFFERENT
+# scene for this long (the reference integration had exactly this bug: scene 2
+# was chosen in HA and ~5 s later an old echo moved the selector back to 1).
 _OWN_CMD_GUARD = 30.0
 
 
 def scenes_device_info() -> DeviceInfo:
-    """Area scenes kisi ek module ke nahi - apna alag global device."""
+    """Area scenes do not belong to any single module - they get their own global device."""
     return DeviceInfo(
         identifiers={(DOMAIN, "area_scenes")},
         name="Raylogic MOD Area Scenes",

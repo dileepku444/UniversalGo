@@ -1,26 +1,25 @@
 """Constants for the Raylogic MOD4U integration.
 
-MOD4U bhi MOD2U jaisa hi "universal module" hai (same Raylogic GO app, same
-Select Type screen) - farak sirf itna hai ki MOD4U mein 2 ki jagah 4
-physical channels hote hain, jo 2 PAIRS mein group hote hain:
-  Pair 1 = channel_start + 0, channel_start + 1   (jaise ch1, ch2)
-  Pair 2 = channel_start + 2, channel_start + 3   (jaise ch3, ch4)
-Har channel ko independently Relay / Dimmer / Fan banaya ja sakta hai, LEKIN
-Curtain aur CTC dono "paired" modes hain - jab kisi pair ka ek channel
-Curtain ya CTC banaya jaata hai, wahi pura pair (dono physical channels)
-us EK logical entity ke andar internally consume ho jaata hai (bilkul jaisa
-MOD2U mein CTC ke liye tha - yahan Curtain bhi wahi rule follow karta hai,
-jaisa user ne confirm kiya).
+The MOD4U is the same kind of "universal module" as the MOD2U (same
+Raylogic GO app, same Select Type screen) - the only difference is that the
+MOD4U has 4 physical channels instead of 2, grouped into 2 PAIRS:
+  Pair 1 = channel_start + 0, channel_start + 1   (e.g. ch1, ch2)
+  Pair 2 = channel_start + 2, channel_start + 3   (e.g. ch3, ch4)
+Each channel can independently be a Relay / Dimmer / Fan, BUT Curtain and
+CTC are both "paired" modes - when one channel of a pair is set to Curtain
+or CTC, the whole pair (both physical channels) is consumed internally by
+that ONE logical entity (exactly as for CTC on the MOD2U - Curtain follows
+the same rule here, as confirmed by the user).
 
-Is file mein 2 tarah ke values hain:
-  1. CONFIRMED  - MOD2U capture se already verify ho chuka hai (Relay/
-     Dimmer/Fan/CTC-pair1 format MOD4U ke liye bhi identical hai, kyunki
-     wire-protocol level pe MOD4U bhi wahi *AR=/*AZ= frame shape use karta
-     hai, sirf zyada channels/pairs).
-  2. PLACEHOLDER / TODO - Pair 2 (channel 3-4) ke Curtain literal bytes
-     abhi tak capture nahi hue. Jaha "TODO CAPTURE" likha hai, wahan real
-     value pata chalte hi yahin update karna hai. Tab tak fallback/warning
-     logic (protocol.py mein) safe defaults use karta hai.
+This file contains two kinds of values:
+  1. CONFIRMED  - already verified from the MOD2U capture (the Relay/
+     Dimmer/Fan/CTC-pair-1 format is identical for the MOD4U, because at
+     the wire-protocol level the MOD4U uses the same *AR=/*AZ= frame shape,
+     just with more channels/pairs).
+  2. PLACEHOLDER / TODO - the literal Curtain bytes for Pair 2 (channels
+     3-4) have not been captured yet. Wherever "TODO CAPTURE" appears, the
+     real value must be filled in here once it is known. Until then the
+     fallback/warning logic (in protocol.py) uses safe defaults.
 """
 
 DOMAIN = "raylogic_mod"
@@ -28,82 +27,79 @@ DOMAIN = "raylogic_mod"
 # Network -------------------------------------------------------------- #
 DEFAULT_PORT = 5550
 CONNECT_TIMEOUT = 5
-RECONNECT_DELAY = 5   # v1.6.7 (P2): 30 -> 5, module wapas aate hi jaldi jud jao
+RECONNECT_DELAY = 5   # v1.6.7 (P2): 30 -> 5, reconnect quickly once the module is back
 
-# STABILITY FIX (webpage/entities "Unavailable" flicker): pehle har
-# disconnect (chahe 2-second ka chhota blip ho, jaise device ka apna
-# resync ya ek chhota network hiccup) turant UI mein "Unavailable"
-# dikhata tha, aur agli reconnect-try hamesha poore FIXED 30s baad hoti
-# thi - chahe device turant wapas aa jaata. Real logs mein ye dikha ki
-# bahut saare disconnect sirf 5-10 second ke andar khud theek ho jaate
-# hain (device thoda busy tha, ya humara apna periodic resync tha) -
-# lekin fixed 30s retry + turant "Unavailable" flag ki wajah se UI mein
-# hamesha flicker/Unavailable dikhta rehta tha jabki device asal mein
-# thodi hi der down tha.
+# STABILITY FIX (web page/entities flickering "Unavailable"): every
+# disconnect (even a 2-second blip, such as the device's own resync or a
+# short network hiccup) used to show "Unavailable" in the UI immediately,
+# and the next reconnect attempt always happened after a FIXED 30 s - even
+# if the device came back straight away. Real logs showed that many
+# disconnects recover by themselves within 5-10 seconds (the device was
+# briefly busy, or it was our own periodic resync) - but the fixed 30 s
+# retry plus the immediate "Unavailable" flag made the UI flicker/show
+# Unavailable constantly, although the device was only down briefly.
 #
-# Fix (dono jagah): (1) reconnect ab FIXED 30s ka wait nahi karta - chhota,
-# tez pehla retry karta hai aur dheere-dheere RECONNECT_DELAY tak badhta
-# hai (neeche RECONNECT_BACKOFF_STEPS), taaki chhote blips 30s ka poora
-# wait kiye bina hi turant recover ho jayein. (2) entity ko turant
-# "Unavailable" mat dikhao - UNAVAILABLE_GRACE_SECONDS ka ek chhota grace
-# window do; agar usi window ke andar reconnect safal ho jaaye (jaisa
-# chhote blips mein hota hai), UI mein kabhi flicker hi nahi dikhega.
-# Sirf agar itni der tak connect() wapas safal nahi hota, tab hi entity
-# "Unavailable" dikhegi - matlab lagatar/genuine outage ke liye hi.
+# Fix (in both places): (1) reconnect no longer waits a FIXED 30 s - the
+# first retry is short and fast, and the wait grows gradually up to
+# RECONNECT_DELAY (RECONNECT_BACKOFF_STEPS below), so short blips recover
+# immediately without waiting the full 30 s. (2) Do not show the entity as
+# "Unavailable" immediately - allow a short grace window of
+# UNAVAILABLE_GRACE_SECONDS; if the reconnect succeeds within that window
+# (as it does for short blips), the UI never flickers. Only if connect()
+# has not succeeded after that long is the entity shown as "Unavailable" -
+# i.e. only for a sustained/genuine outage.
 RECONNECT_BACKOFF_STEPS = (1, 2, 4, RECONNECT_DELAY)
 UNAVAILABLE_GRACE_SECONDS = 45
 
-# BUG FIX: writer.close() + wait_closed() ke liye pehle koi upper-bound
-# timeout nahi tha. Agar koi Raylogic device network par flaky ho ya TCP
-# FIN/ACK cleanly na kare (sasta embedded device kar sakta hai), to
-# wait_closed() bina kisi limit ke atak sakta tha - kabhi kabhi OS ke apne
-# TCP retry timeout tak (minutes). Ye "kuch dair atak kar phir wapas aata
-# hai" wale pattern ka root cause tha, aur jitne zyada devices utna hi
-# zyada trigger hone ka chance. Ab har jagah close-operation isi fixed
-# CLOSE_TIMEOUT ke andar wrap hoti hai (protocol.py + config_flow.py) -
-# timeout hone par bhi socket/writer ko discard/None kar diya jaata hai,
-# taaki caller kabhi bhi is se zyada der na atke.
+# BUG FIX: writer.close() + wait_closed() used to have no upper-bound
+# timeout. If a Raylogic device was flaky on the network or did not
+# complete the TCP FIN/ACK cleanly (which a cheap embedded device may do),
+# wait_closed() could hang without limit - sometimes until the OS's own
+# TCP retry timeout (minutes). This was the root cause of the "hangs for a
+# while and then comes back" pattern, and the more devices, the more often
+# it triggered. Every close operation is now wrapped in this fixed
+# CLOSE_TIMEOUT (protocol.py + config_flow.py) - even on timeout the
+# socket/writer is discarded/set to None, so the caller is never stuck for
+# longer than this.
 CLOSE_TIMEOUT = 5
 
-# BUG FIX (2nd hang source, alag se pakda gaya): har command send ke baad
-# `await writer.drain()` hota hai, taaki TCP write-buffer chhota rahe -
-# lekin isko bhi pehle KOI timeout nahi tha. Agar device stop-ho-jaaye ya
-# TCP ACK dena band kar de (socket "half-dead" ho jaaye lekin bina kisi
-# error/FIN ke), drain() OS ke apne TCP retransmit-timeout tak (minutes)
-# atak sakta tha - aur har switch/light/fan/cover ka turn_on/turn_off
-# seedha isi drain() par await karta hai, isliye ye directly HA ke
-# service-call ko (us entity ke liye) "hang" mehsoos karata. Ab isi tarah
-# WRITE_TIMEOUT ke andar hard-capped hai - timeout hote hi connection ko
-# turant "lost" maan kar reconnect-cycle trigger ho jaata hai (dekho
-# protocol.py _send_raw), command chup-chaap kabhi bhi is se zyada der
-# atki nahi rehti.
+# BUG FIX (second hang source, found separately): every command send is
+# followed by `await writer.drain()` to keep the TCP write buffer small -
+# but this also had NO timeout. If the device stopped or stopped sending
+# TCP ACKs (a "half-dead" socket without any error/FIN), drain() could
+# hang until the OS's own TCP retransmit timeout (minutes) - and every
+# switch/light/fan/cover turn_on/turn_off awaits this drain() directly, so
+# it made the HA service call (for that entity) feel "hung". It is now
+# hard-capped by WRITE_TIMEOUT in the same way - as soon as it times out,
+# the connection is treated as "lost" and a reconnect cycle is triggered
+# (see protocol.py _send_raw); a command is never stuck longer than this.
 #
-# TUNING NOTE (real-world regression pakdi gayi): pehla attempt 5s tha -
-# bahut tight nikla. Ek naya device network par connect hote hi (jaise
-# doosra Raylogic box add karna) chhote/sasta home router-WiFi par ek
-# chhota transient hiccup (ARP resolution, thoda packet delay) bilkul
-# NORMAL hai aur khud hi 1-2 second mein theek ho jaata hai. 5s ka tight
-# limit isi normal hiccup ko galti se "device hang ho gaya" samajh kar
-# turant connection ko force-kill kar deta tha - iska matlab naya device
-# add karna already-working device ko bhi "connection lost" mein daal
-# deta tha, jo asal bug se bhi zyada iss FIX ki wajah se ho raha tha. Ab
-# 15s - genuine infinite/multi-minute hang tab bhi kabhi nahi hone
-# dega, lekin normal network jitter ko galat-fahmi se "hang" nahi maanega.
+# TUNING NOTE (a real-world regression was found): the first attempt used
+# 5 s - far too tight. When a new device connects to the network (e.g.
+# adding another Raylogic box), a short transient hiccup on a small/cheap
+# home router Wi-Fi (ARP resolution, some packet delay) is completely
+# NORMAL and recovers by itself within 1-2 seconds. The tight 5 s limit
+# mistook this normal hiccup for "the device has hung" and force-killed
+# the connection immediately - so adding a new device also put an
+# already-working device into "connection lost", caused more by this FIX
+# than by the original bug. Now 15 s - still never allows a genuine
+# infinite/multi-minute hang, but no longer mistakes normal network jitter
+# for a "hang".
 WRITE_TIMEOUT = 15
 
 # ------------------------------------------------------------------ #
-# MODEL_* = config_flow mein "Device Model" dropdown ki values. Har model
-# ka apna naam/description/default channel-count yahan ek hi jagah
-# define hai - naya model add karna ho to bas yahan ek entry aur add
-# karni hai, baaki poora code (protocol.py) generic hai aur kisi bhi
-# channel-count/pair-count ke liye already kaam karta hai.
+# MODEL_* = values of the "Device Model" dropdown in config_flow. Each
+# model's name/description/default channel count is defined here in one
+# place - to add a new model, just add one more entry here; the rest of
+# the code (protocol.py) is generic and already works for any channel
+# count/pair count.
 #
-# NOTE: pehle yahan har model ke liye ek "br40_code" bhi tha (RE8/H81
-# jaisa auto-discovery ke liye) - MOD2U/MOD4U/MOD2F kabhi bhi `?BR40=`
-# query ka jawab nahi dete the (confirmed), isliye ye poora BR40 code-
-# path (const.py + protocol.py dono se) hata diya gaya hai. Static/
-# legacy channel setup (config_flow se Area + per-channel Type) hi
-# hamesha se actual working path tha.
+# NOTE: each model used to have a "br40_code" here as well (for
+# RE8/H81-style auto-discovery) - MOD2U/MOD4U/MOD2F never answered the
+# `?BR40=` query (confirmed), so the whole BR40 code path has been removed
+# (from both const.py and protocol.py). The static/legacy channel setup
+# (Area + per-channel Type from config_flow) was always the path that
+# actually worked.
 # ------------------------------------------------------------------ #
 MODEL_MOD2U = "mod2u"
 MODEL_MOD4U = "mod4u"
@@ -124,21 +120,20 @@ DEVICE_MODELS: dict[str, dict] = {
         "name": "MOD2F",
         "desc": "Single-Channel Fan Module (fixed Fan type)",
         "channel_count": 1,
-        # MOD2U/MOD4U ke ulat, MOD2F ek "universal" module nahi hai - iska
-        # ek hi physical channel hamesha Fan hi hota hai (Raylogic GO app
-        # mein "Select Type" ka koi option nahi, seedha "Fan Mode"). Isliye
-        # config_flow mein iske liye Channel-Type dropdown dikhaya hi nahi
-        # jaata (_channels_schema_fields dekho) - type hamesha yahi fixed
-        # value use hoti hai. (String literal "fan" = CH_TYPE_FAN, jo neeche
-        # define hai - yahan upar forward-reference avoid karne ke liye
-        # literal use kiya gaya hai.)
+        # Unlike the MOD2U/MOD4U, the MOD2F is not a "universal" module -
+        # its single physical channel is always a fan (the Raylogic GO app
+        # has no "Select Type" option for it, only "Fan Mode"). The config
+        # flow therefore never shows a Channel Type dropdown for it (see
+        # _channels_schema_fields) - this fixed value is always used as the
+        # type. (The string literal "fan" = CH_TYPE_FAN, defined below - a
+        # literal is used here to avoid a forward reference.)
         # CONFIRMED (Model_Number_-_Mod2F.txt + app screenshot, device
-        # 192.168.1.36, node 111, Area 04, Start Address/channel 0x09):
-        #   Frame shape bilkul MOD2U/MOD4U jaisa hi: 00 1A <area> <level> <channel>
+        # 192.168.1.36, node 111, Area 04, start address/channel 0x09):
+        #   Frame shape exactly as MOD2U/MOD4U: 00 1A <area> <level> <channel>
         #   Off: level=01   Speed1: level=02   Speed2: level=03
         #   Speed3: level=04   Speed4/full: level=05
-        # (Same FAN_LEVEL_OFF/FAN_SPEEDS neeche reuse hote hain - MOD2F ke
-        # liye alag se koi naya constant nahi chahiye.)
+        # (The same FAN_LEVEL_OFF/FAN_SPEEDS below are reused - the MOD2F
+        # needs no separate constants.)
         "fixed_type": "fan",
     },
 }
@@ -146,17 +141,17 @@ DEFAULT_MODEL = MODEL_MOD4U
 
 # ------------------------------------------------------------------ #
 # Area
-# MOD2U capture se confirm hua: Area byte = seedha area number ka hex hai
-# (Area 12 -> 0x0C). MOD4U bhi wahi Area scheme use karta hai (1-16).
+# Confirmed from the MOD2U capture: the Area byte is simply the area
+# number in hex (Area 12 -> 0x0C). The MOD4U uses the same Area scheme (1-16).
 # ------------------------------------------------------------------ #
 AREA_MIN = 1
 AREA_MAX = 16
-LEGACY_DEFAULT_AREA = 0x0C  # 12 - default jab user ne config mein khud
-                             # koi area na diya ho
+LEGACY_DEFAULT_AREA = 0x0C  # 12 - default when the user has not entered
+                             # an area in the config
 
 # ------------------------------------------------------------------ #
-# Command bytes - CONFIRMED (Docklight capture, MOD2U se, same wire
-# protocol MOD4U ke liye bhi)
+# Command bytes - CONFIRMED (Docklight capture from a MOD2U; the MOD4U
+# uses the same wire protocol)
 #   <ID>,<Seq>,*AR=<AddrHigh:00><Cmd:1A><Area><Level><Channel>
 #   Relay: Level 01=OFF, 02=ON
 # ------------------------------------------------------------------ #
@@ -192,9 +187,9 @@ DIMMER_LEVEL_OFF = 0xFF
 # format - which one a module uses is a config choice (the Double
 # Driver / Single Driver checkboxes in the app), not something the
 # device reports on its own, so it's selected in this integration's
-# config too (see config_flow.py CTC_MODE_OPTIONS). MOD4U ke liye is
-# sub-mode ko HAR PAIR ke liye ALAG se choose kiya ja sakta hai (Pair 1
-# aur Pair 2 dono independently single ya double ho sakte hain).
+# config too (see config_flow.py CTC_MODE_OPTIONS). On the MOD4U this
+# sub-mode can be chosen SEPARATELY for EACH PAIR (Pair 1 and Pair 2 can
+# each independently be single or double).
 #
 # 1) SINGLE DRIVER (CW/WW, one physical channel-PAIR - confirmed by the
 #    user: configuring a CTC light in the Raylogic GO app actually
@@ -229,20 +224,19 @@ DIMMER_LEVEL_OFF = 0xFF
 #      Frame (7 bytes after *AZ=):
 #          <area><ch_lo><level_lo><ch_hi><level_hi><64><pct>
 #
-#      BUG FIX (yehi CCT/CTC ka asli bug tha): pehle yahan <ch_lo> aur
-#      <ch_hi> ko FIXED "01"/"02" markers samjha gaya tha. Wo galat-
-#      fahmi sirf isliye hui kyunki jis device se capture liya gaya tha
-#      (MOD2U, Area 16) uske CTC pair ke PHYSICAL channels hi 1 aur 2
-#      the - to fixed marker aur real channel number bilkul ek jaise
-#      dikh rahe the. Poore protocol mein har frame (relay/dimmer/fan/
-#      CTC-single) hamesha REAL physical channel number carry karta
-#      hai, aur curtain ka slot byte bhi channel se derive hota hai -
-#      *AZ= bhi isi rule ko follow karta hai. Isliye Area 12 ke MOD4U
-#      par jahan CTC pair channels 15-16 hain, frame mein 0F/10 jaana
-#      chahiye tha, lekin 01/02 ja raha tha - device us frame ko drop
-#      kar deta tha, isliye CCT light bilkul respond nahi karti thi.
-#      Ab protocol.py in dono byte ko us CTC channel ki apni pair se
-#      derive karta hai (chhota channel = cool slot, bada = warm slot).
+#      BUG FIX (this was the real CCT/CTC bug): <ch_lo> and <ch_hi> used
+#      to be treated as FIXED "01"/"02" markers. That misunderstanding
+#      arose only because the device the capture was taken from (MOD2U,
+#      Area 16) had its CTC pair on PHYSICAL channels 1 and 2 - so a fixed
+#      marker and the real channel number looked identical. Throughout the
+#      protocol every frame (relay/dimmer/fan/CTC-single) always carries
+#      the REAL physical channel number, and the curtain slot byte is also
+#      derived from the channel - *AZ= follows the same rule. So on the
+#      Area 12 MOD4U, whose CTC pair is on channels 15-16, the frame should
+#      have carried 0F/10 but carried 01/02 - the device dropped the frame,
+#      which is why the CCT light did not respond at all.
+#      protocol.py now derives both bytes from the CTC channel's own pair
+#      (lower channel = cool slot, higher = warm slot).
 #      warm+cool always summed to 0x100 (256) in every captured colour-
 #      temperature-only sweep (fixed 100% brightness); a separate
 #      brightness-only sweep (fixed colour) varied that same "cool"
@@ -258,10 +252,10 @@ DIMMER_LEVEL_OFF = 0xFF
 #      formula in protocol.py is derived to satisfy both captured
 #      sweeps exactly, but a combined brightness+colour capture would
 #      help confirm it fully.
-#      NOTE: purani "MOD4U limitation" (do double-driver CTC pairs ek
-#      hi Area mein alag nahi kiye ja sakte) ab khatam ho gayi hai -
-#      kyunki frame ab real channel numbers carry karta hai, dono pairs
-#      apne apne channel bytes se cleanly disambiguate ho jaate hain.
+#      NOTE: the old "MOD4U limitation" (two double-driver CTC pairs in
+#      the same Area could not be told apart) no longer exists - since
+#      the frame now carries the real channel numbers, both pairs are
+#      cleanly distinguished by their own channel bytes.
 # ------------------------------------------------------------------ #
 CTC_MODE_SINGLE = "single"
 CTC_MODE_DOUBLE = "double"
@@ -290,44 +284,44 @@ FAN_LEVEL_OFF = 0x01
 FAN_SPEEDS = {0: 0x01, 25: 0x02, 50: 0x03, 75: 0x04, 100: 0x05}
 
 # ------------------------------------------------------------------ #
-# Curtain - ab FORMULA se derive hota hai (pehle 6 hardcoded literal
-# strings the - YEHI curtain ka asli bug tha).
+# Curtain - now DERIVED from a formula (there used to be 6 hardcoded
+# literal strings - THAT was the real curtain bug).
 #
-# Curtain Relay/Dimmer/Fan se ALAG frame shape use karta hai (cmd byte
-# 0x27 = open/close, 0x26 = stop, 0x1A ki jagah), aur usme Area byte
-# hota hi NAHI:
+# A curtain uses a DIFFERENT frame shape from Relay/Dimmer/Fan (command
+# byte 0x27 = open/close, 0x26 = stop, instead of 0x1A), and it has NO
+# Area byte at all:
 #
 #     00 27 <curtain_slot> <direction> <run>      (open / close)
 #     00 26 <curtain_slot> 00 00                  (stop)
 #
-# <curtain_slot> = GLOBAL curtain/pair index, area ya per-device pair
-# number NAHI. Raylogic installation mein channel numbers poore system
-# mein globally, hamesha 2-2 ke block mein allot hote hain (device 1 ->
-# ch 1-2, device 2 -> ch 3-6, ek 1-channel MOD2F bhi apna poora block
-# 7-8 leta hai, agla 9-10, ... aur aage 23-24). Isliye:
+# <curtain_slot> = the GLOBAL curtain/pair index, NOT the area or a
+# per-device pair number. In a Raylogic installation channel numbers are
+# allocated globally across the whole system, always in blocks of 2
+# (device 1 -> ch 1-2, device 2 -> ch 3-6, even a 1-channel MOD2F takes a
+# whole block 7-8, the next 9-10, ... and so on up to 23-24). Therefore:
 #
-#     curtain_slot = (pair ka chhota channel number + 1) // 2
+#     curtain_slot = (lower channel number of the pair + 1) // 2
 #
-# CONFIRMED - real hardware echoes (user ke apne HA debug log se, jab
-# curtain Raylogic GO app se chalayi gayi):
+# CONFIRMED - real hardware echoes (from the user's own HA debug log, while
+# the curtain was operated from the Raylogic GO app):
 #   MOD2U node 115, Area 08, channels 23-24  -> *AR=00270C020A
 #        (0x0C = 12 = (23+1)//2)   [close], *AR=00270C010A [open]
 #   MOD4U node 111, Area 12, channels 13-16  -> *AR=002707020A
 #        (0x07 =  7 = (13+1)//2)   [close], *AR=002707010A [open]
-#   Purana Model_Number_Mod4u.txt capture (Area 7, channels 3-6) ->
-#        0x02 = (3+1)//2 aur 0x03 = (5+1)//2 - matlab wahi formula,
-#        bas wo ek hi device ke slot the. Unhe "Pair 1 / Pair 2" samajh
-#        kar HAR device par bhej dena hi bug tha: Area 8 ke ch 23-24
-#        wali curtain ko slot 12 chahiye tha, lekin slot 2 bheja ja
-#        raha tha - device us frame ko chup-chaap ignore kar deta hai
-#        (isliye "kuch hota hi nahi" wala symptom, koi error bhi nahi).
+#   The old Model_Number_Mod4u.txt capture (Area 7, channels 3-6) ->
+#        0x02 = (3+1)//2 and 0x03 = (5+1)//2 - the same formula, they were
+#        just the slots of that one device. Treating them as "Pair 1 /
+#        Pair 2" and sending them to EVERY device was the bug: the curtain
+#        on ch 23-24 in Area 8 needed slot 12 but slot 2 was being sent -
+#        the device silently ignores such a frame (hence the "nothing
+#        happens" symptom, with no error either).
 #
-# <run> = aakhri byte. Real app traffic (dono devices) me 0x0A hai;
-# purane Area-7 capture me 0x05 tha - matlab ye curtain ka configured
-# travel/run parameter hai, fixed constant nahi. Default 0x0A rakha hai
-# (user ke asli hardware jaisa), aur protocol.py device se aane wale
-# curtain echo se is byte ko khud-ba-khud SEEKH bhi leta hai, taaki jo
-# bhi value app use karti ho wahi HA bhi bheje.
+# <run> = the last byte. Real app traffic (both devices) uses 0x0A; the
+# old Area-7 capture had 0x05 - so this is the curtain's configured
+# travel/run parameter, not a fixed constant. The default is 0x0A (as on
+# the user's real hardware), and protocol.py also LEARNS this byte
+# automatically from curtain echoes sent by the device, so HA sends
+# whatever value the app uses.
 # ------------------------------------------------------------------ #
 CURTAIN_CMD_ADDR_HIGH = "00"
 CURTAIN_CMD_MOVE = 0x27      # open/close
@@ -337,7 +331,7 @@ CURTAIN_DIR_CLOSE = 0x02
 CURTAIN_RUN_BYTE_DEFAULT = 0x0A
 CURTAIN_STOP_TAIL = "0000"
 
-# Har curtain slot 2 physical channels ka hota hai (ek pair).
+# Each curtain slot covers 2 physical channels (one pair).
 CHANNELS_PER_CURTAIN_SLOT = 2
 
 # ------------------------------------------------------------------ #
@@ -348,9 +342,9 @@ CHANNELS_PER_CURTAIN_SLOT = 2
 # live auto-detection the way RE8's +BR40= can. It's kept here for
 # reference/documentation and for a future "set channel mode from HA"
 # service, and to interpret the byte if it's ever seen echoed back.
-# MOD4U ka apna +AR40= layout (4 channels ke liye ch_count/records kaise
-# grow hote hain) capture nahi hua - neeche wala shape MOD2U (2-channel)
-# ka hai, sirf reference ke liye.
+# The MOD4U's own +AR40= layout (how ch_count/records grow for 4
+# channels) has not been captured - the shape below is the MOD2U's
+# (2-channel) layout, for reference only.
 #   Bytes (12 total, after +AR40=): 01 01 <ch_count> <ch1_type> <ch1_sub>
 #   <ch2_type> <ch2_sub> 00 00 00 FF FF
 #   ch_type: 00=relay 01=dimmer 02=fan 03=curtain
@@ -362,9 +356,9 @@ AR40_TYPE_CURTAIN = 0x03
 
 # ------------------------------------------------------------------ #
 # Channel types (per-channel, as seen in "Select Type" screen)
-# Ye types config_flow se (user ke manual selection se) aate hain - dekho
-# _resolve_channel_types (__init__.py). Device khud apna channel-type
-# broadcast nahi karta (BR40 auto-discovery hata di gayi hai - dekho
+# These types come from config_flow (the user's manual selection) - see
+# _resolve_channel_types (__init__.py). The device does not broadcast its
+# own channel type (BR40 auto-discovery has been removed - see the
 # protocol.py header note).
 # ------------------------------------------------------------------ #
 CH_TYPE_DIMMER = "dimmer"
@@ -375,214 +369,214 @@ CH_TYPE_CTC = "ctc"
 CH_TYPE_EMPTY = "empty"
 
 CHANNELS_PER_PAIR = 2
-DEFAULT_CHANNEL_COUNT = 4  # fallback only, agar model info kisi wajah se na mile
-# NOTE: pehle yahan ye hi fixed value poore integration ki channel-count
-# default thi (jab integration sirf MOD4U ke liye tha). Ab actual channel
-# count DEVICE_MODELS[model]["channel_count"] se aata hai (config_flow
-# mein "Device Model" dropdown se), model ke hisaab se 2 (MOD2U) ya 4
-# (MOD4U). PAIR_COUNT bhi ab per-model derive hota hai - config_flow.py
-# ka _pair_count(model) dekho.
+DEFAULT_CHANNEL_COUNT = 4  # fallback only, if the model info is unavailable for some reason
+# NOTE: this fixed value used to be the channel-count default for the whole
+# integration (when the integration supported only the MOD4U). The actual
+# channel count now comes from DEVICE_MODELS[model]["channel_count"] (via
+# the "Device Model" dropdown in config_flow): 2 (MOD2U) or 4 (MOD4U)
+# depending on the model. PAIR_COUNT is now derived per model as well -
+# see _pair_count(model) in config_flow.py.
 
-# "scene" + "select" (v1.6.0): Raylogic GO app ke AREA scenes. Ye poori
-# installation ke liye global hain (kisi ek module ke nahi), isliye sirf EK
-# entry ("scene host") inhe banata hai - dekho scene.py / select.py.
+# "scene" + "select" (v1.6.0): Raylogic GO app AREA scenes. They are global
+# to the whole installation (not tied to one module), so only ONE entry
+# (the "scene host") creates them - see scene.py / select.py.
 PLATFORMS = ["switch", "light", "fan", "cover", "scene", "select"]
 
 KEEPALIVE_CMD = "*KA=01"
 
 # ------------------------------------------------------------------ #
-# KEEPALIVE FORMAT (v1.5.3) - "device har 12 second me khud connection
-# tod deta hai" ka ilaaj
+# KEEPALIVE FORMAT (v1.5.3) - the cure for "the device drops the
+# connection by itself every 12 seconds"
 #
-# v1.5.2 ke logs ne ek bahut saaf pattern dikhaya:
-#   - 301 me se 301 session THEEK ~12.3 second chal kar device ki taraf
-#     se band hui (12s/14s/15s, har ek device par bilkul same).
-#   - Ye pehle bhi ho raha tha (purane v1.4.2 log me 1881 session, sab
-#     12.0s par EOF) - bas tab humara apna buggy resync ~13s me connection
-#     tod hi deta tha, isliye ye device-side timer kabhi saamne nahi aaya.
-#   - Device khud har ~6 second me apna *KA= bhejta hai. 6 x 2 = 12.
-#     Matlab: device har KA ka JAWAB maangta hai, aur do KA ka jawab na
-#     mile to client ko dead maan kar connection kaat deta hai.
+# The v1.5.2 logs showed a very clear pattern:
+#   - 301 of 301 sessions were closed by the device after EXACTLY ~12.3
+#     seconds (12 s/14 s/15 s, identical on every device).
+#   - This had happened before too (the old v1.4.2 log had 1881 sessions,
+#     all ending with EOF at 12.0 s) - but back then our own buggy resync
+#     broke the connection at ~13 s anyway, so this device-side timer never
+#     became visible.
+#   - The device itself sends its *KA= about every 6 seconds. 6 x 2 = 12.
+#     Meaning: the device expects a REPLY to every KA, and if two KAs go
+#     unanswered it considers the client dead and drops the connection.
 #
-# Ab dekho humara purana keepalive kaisa jaata tha:
-#     TX 192.168.120.101: *KA=01                  <-- BINA prefix
-#     TX 192.168.120.101: 099,001,*AR=001A100101  <-- command, prefix ke saath
-#     RX 192.168.120.101: 106,*KA=21-0542100...   <-- device, prefix ke saath
-# Is wire par HAR frame "<id>," ya "<id>,<seq>," prefix carry karta hai.
-# Sirf humara keepalive bina prefix ke jaata tha - bahut sambhavna hai ki
-# device use malformed samajh kar phenk deta tha, isliye uske liye humne
-# kabhi jawab diya hi nahi.
+# Here is how our old keepalive went out:
+#     TX 192.168.120.101: *KA=01                  <-- WITHOUT prefix
+#     TX 192.168.120.101: 099,001,*AR=001A100101  <-- command, with prefix
+#     RX 192.168.120.101: 106,*KA=21-0542100...   <-- device, with prefix
+# On this wire EVERY frame carries an "<id>," or "<id>,<seq>," prefix.
+# Only our keepalive went out without a prefix - most likely the device
+# discarded it as malformed, so as far as it was concerned we never
+# replied at all.
 #
-# Kyunki humare paas app ka capture nahi hai, exact format guess karne ke
-# bajaye code ise KHUD SEEKHTA hai: har naye connection par ek variant
-# try hota hai aur session kitni der chali ye naapa jaata hai. Jo variant
-# 12-second wali deewar todta hai (session > KEEPALIVE_GOOD_SESSION), use
-# permanently lock kar liya jaata hai. Device har 12s me reconnect karta
-# hai, isliye ye tuning kuch hi minute me apne aap ho jaati hai.
+# Since we have no capture of the app, instead of guessing the exact format
+# the code LEARNS it: each new connection tries one variant and measures
+# how long the session lasts. The variant that breaks through the
+# 12-second wall (session > KEEPALIVE_GOOD_SESSION) is locked in
+# permanently. The device reconnects every 12 s, so this tuning completes
+# by itself within a few minutes.
 #
-# Agar koi bhi variant kaam na kare, to bhi koi problem nahi - FAST
-# RECONNECT (neeche) downtime ko ~2.3s se ghata kar milliseconds me le
-# aata hai, isliye user ko farak nahi padega.
+# Even if no variant works it is not a problem - FAST RECONNECT (below)
+# reduces the downtime from ~2.3 s to milliseconds, so the user will not
+# notice.
 # ------------------------------------------------------------------ #
-# {seq} apne aap bhar jaata hai. Order = sabse zyada sambhavit pehle.
+# {seq} is filled in automatically. Order = most likely first.
 KEEPALIVE_VARIANTS = (
-    "{id},{seq},*KA=01",   # humare command frames jaisa (id + seq)
-    "{id},*KA=01",         # device ke apne KA frame jaisa (sirf id)
-    "*KA=01",              # purana behaviour (bina prefix) - fallback
+    "{id},{seq},*KA=01",   # like our command frames (id + seq)
+    "{id},*KA=01",         # like the device's own KA frame (id only)
+    "*KA=01",              # old behaviour (no prefix) - fallback
 )
-# Session itni der chal gayi = ye variant 12s ki deewar tod raha hai.
+# A session lasting this long = this variant breaks the 12 s wall.
 KEEPALIVE_GOOD_SESSION = 25
 
-# Device ke *KA= ka jawab dene ke beech kam se kam itna gap - sirf
-# anti-spam ke liye (agar device kabhi burst me KA bhej de). Device ka
-# apna KA ~6s ka hai, isliye 1s se har KA ka jawab aaram se chala jaata
-# hai. NOTE: ye jaan-boojh kar "kya humne haal me kuch aur bheja tha"
-# par depend NAHI karta - device ko specifically KA ka jawab chahiye,
-# koi bhi traffic kaafi nahi hai.
+# Minimum gap between replies to the device's *KA= - for anti-spam only
+# (in case the device ever sends KAs in a burst). The device's own KA
+# interval is ~6 s, so with 1 s every KA is easily answered. NOTE: this
+# deliberately does NOT depend on "did we send anything else recently" -
+# the device specifically needs a reply to its KA; any other traffic is
+# not enough.
 KA_REPLY_MIN_GAP = 1.0
 
 # ------------------------------------------------------------------ #
 # FAST RECONNECT (v1.5.3)
 #
-# Agar device ka ~12s par band karna uski design hi hai, to use "error"
-# ki tarah treat karna galat hai. v1.5.2 me har EOF ke baad 1s backoff +
-# 0.5-2.0s settle lagta tha = har cycle ~2.3s downtime, yaani 16% waqt
-# connection down (measured). Usi 16% me pada hua click reconnect ka
-# intezaar karta tha.
+# If the device closing at ~12 s is simply its design, treating it as an
+# "error" is wrong. In v1.5.2 every EOF was followed by a 1 s backoff +
+# 0.5-2.0 s settle = ~2.3 s downtime per cycle, i.e. the connection was
+# down 16% of the time (measured). A click landing in those 16% had to
+# wait for the reconnect.
 #
-# Ab: agar session NORMAL lambi chali thi (FAST_RECONNECT_MIN_SESSION se
-# zyada), to ye ek expected close hai - turant (FAST_RECONNECT_DELAY)
-# dobara connect karo, koi backoff/settle nahi. Downtime ~2.3s se ghat
-# kar ~0.1-0.3s reh jaata hai (uptime ~84% se ~98%).
+# Now: if the session lasted a NORMAL length (longer than
+# FAST_RECONNECT_MIN_SESSION), it is an expected close - reconnect
+# immediately (FAST_RECONNECT_DELAY), with no backoff/settle. Downtime
+# drops from ~2.3 s to ~0.1-0.3 s (uptime from ~84% to ~98%).
 #
-# Genuine failure (session bahut chhoti, ya connect hi fail) par purana
-# backoff + settle waisa hi rehta hai - warna ek sach me down device par
-# HA hammer karne lagta.
+# On a genuine failure (very short session, or connect itself failing) the
+# old backoff + settle still applies - otherwise HA would hammer a device
+# that really is down.
 # ------------------------------------------------------------------ #
 FAST_RECONNECT_MIN_SESSION = 8
 FAST_RECONNECT_DELAY = 0.05
 
 # ------------------------------------------------------------------ #
-# STABILITY (v1.5.0) - "connection lost" ka asli ilaaj
+# STABILITY (v1.5.0) - the real cure for "connection lost"
 #
-# Real logs (10 device, 9.8 minute) se jo saaf pakda gaya:
-#   - 202 TCP connection khule, jinme se 174 (86%) HUMARE apne periodic
-#     resync ne banaye. Sirf 26 asli device-side EOF the.
-#   - 26 me se 26 EOF connect hone ke 30 SECOND KE ANDAR aaye, median
-#     session sirf 12 second. Matlab device lambi session sambhal leta
-#     hai - use mauka hi nahi mil raha tha.
-#   - Har device khud, bina maange, har 6-12 second me apna *KA= frame
-#     bhejta hai (293 RX vs humare 125 TX). Matlab "connection zinda hai
-#     ya nahi" ka jawab device se MUFT me mil raha hai.
+# What the real logs (10 devices, 9.8 minutes) clearly showed:
+#   - 202 TCP connections were opened, 174 (86%) of them by OUR OWN
+#     periodic resync. Only 26 were genuine device-side EOFs.
+#   - All 26 of those EOFs came WITHIN 30 SECONDS of connecting, median
+#     session only 12 seconds. So the device can handle long sessions - it
+#     simply never got the chance.
+#   - Every device sends its own *KA= frame unprompted every 6-12 seconds
+#     (293 RX vs our 125 TX). So the answer to "is the connection alive?"
+#     comes from the device for FREE.
 #
-# Isliye ab strategy ulti hai: connection ko CHHEDNA HI BAND karo.
-#   1. Keepalive ab PASSIVE hai - hum tabhi likhte hain jab device se
-#      kuch aaya hi na ho (KEEPALIVE_INTERVAL tak). Normal halat me
-#      humara write count 0 ho jaata hai.
-#   2. Connection "mar gaya" ka pata ab READ se chalta hai, WRITE se
-#      nahi - agar RX_SILENCE_TIMEOUT tak device ka apna heartbeat na
-#      aaye tabhi use dead maanenge. Ye zyada tez bhi hai aur module ke
-#      TCP stack ko chhedta bhi nahi.
-#   3. Periodic resync ab sirf ek dur ka safety-net hai (neeche
-#      RESYNC_INTERVAL), kyunki app/switch se hue changes device khud
-#      live *AR= broadcast karta hai - state ke liye connection todne
-#      ki zaroorat hi nahi hai.
-#   4. Har naye connect par purane background tasks CANCEL hote hain
-#      (dekho _cancel_bg_tasks + _conn_generation) - pehle har reconnect
-#      ek NAYA resync task banata tha bina purana band kiye, wo jamte
-#      jaate the aur 25s ka interval practically 5-13s ban jaata tha
-#      (logs me 94% resync gaps 20s se kam the).
+# Hence the strategy is now reversed: STOP TOUCHING the connection.
+#   1. The keepalive is now PASSIVE - we only write when nothing at all
+#      has arrived from the device (up to KEEPALIVE_INTERVAL). Under normal
+#      conditions our write count drops to 0.
+#   2. A "dead" connection is now detected by READING, not by WRITING - it
+#      is considered dead only if the device's own heartbeat has not
+#      arrived within RX_SILENCE_TIMEOUT. This is faster and does not
+#      disturb the module's TCP stack.
+#   3. The periodic resync is now only a distant safety net (RESYNC_INTERVAL
+#      below), because the device itself broadcasts changes made from the
+#      app/switch live as *AR= frames - there is no need to break the
+#      connection to get the state.
+#   4. On every new connect the old background tasks are CANCELLED (see
+#      _cancel_bg_tasks + _conn_generation) - previously every reconnect
+#      created a NEW resync task without stopping the old one; they piled
+#      up and the 25 s interval effectively became 5-13 s (94% of resync
+#      gaps in the logs were under 20 s).
 # ------------------------------------------------------------------ #
 
-# Listen loop ek baar me itni der read par wait karta hai. Chhota rakhna
-# theek hai - ye sirf "kitni jaldi silence check karna hai" decide karta
-# hai, koi network traffic generate nahi karta.
+# How long the listen loop waits on one read. Keeping it short is fine -
+# it only decides how quickly silence is checked; it generates no network
+# traffic.
 LISTEN_READ_TIMEOUT = 10
 
-# Naya connection bante hi device apna initial burst bhejta hai (usi se
-# HA ko fresh state milti hai). Burst khatam hua ya nahi, ye ek chhote
-# quiet-gap se pata chalta hai - overall cap INITIAL_DRAIN_MAX hai.
-# (v1.5.2 se pehle har connect par poore 2.5s ka fixed wait hota tha, jo
-# 100+ device wale setup me startup me minute-scale delay ban jaata tha.)
+# As soon as a new connection is established, the device sends its initial
+# burst (that is where HA gets fresh state). Whether the burst has ended is
+# detected by a short quiet gap - the overall cap is INITIAL_DRAIN_MAX.
+# (Before v1.5.2 every connect waited a fixed 2.5 s, which added
+# minute-scale delays to startup on setups with 100+ devices.)
 INITIAL_DRAIN_QUIET = 0.6
 INITIAL_DRAIN_MAX = 2.5
 
-# Humara apna *KA=01 write TABHI jaayega jab device se itni der tak KUCH
-# bhi na aaya ho. Device ka apna heartbeat 6-12s ka hai, isliye 30s
-# (2.5x margin) rakha hai - normal halat me humara write count 0 rehta
-# hai, aur ek-aadh late heartbeat par bhi bekaar ka traffic nahi banta.
-# Ye KEEPALIVE_INTERVAL se alag hai: interval = kitni der me CHECK karna
-# hai, threshold = kitni khamoshi ke baad sach me LIKHNA hai.
+# Our own *KA=01 write is sent ONLY if NOTHING at all has arrived from the
+# device for this long. The device's own heartbeat is 6-12 s, so 30 s
+# (2.5x margin) is used - under normal conditions our write count stays 0,
+# and an occasional late heartbeat does not create useless traffic.
+# This is separate from KEEPALIVE_INTERVAL: interval = how often to CHECK,
+# threshold = after how much silence to actually WRITE.
 KEEPALIVE_IDLE_THRESHOLD = 30
 
-# Device khud har 6-12s me apna *KA= bhejta hai. Itni der tak agar KUCH
-# bhi na aaye, tab connection ko dead maano (~6 missed heartbeats - itna
-# margin isliye ki busy device ya thoda WiFi jitter galti se "dead" na
-# ban jaaye).
+# The device itself sends its *KA= every 6-12 s. If NOTHING at all arrives
+# for this long, treat the connection as dead (~6 missed heartbeats - this
+# margin keeps a busy device or some Wi-Fi jitter from being mistaken for
+# "dead").
 RX_SILENCE_TIMEOUT = 75
 
-# Har reconnect attempt se pehle ek chhota random gap - do fayde:
-#   (a) module ko apna purana socket cleanup karne ka time milta hai
-#       (iske bina naya connect turant EOF kha jaata tha - logs me 5
-#        "Failed to connect ... EOF" isi wajah se the),
-#   (b) 10 device ek saath stampede nahi karte.
+# A short random gap before every reconnect attempt - two benefits:
+#   (a) the module gets time to clean up its old socket
+#       (without it the new connect immediately got an EOF - the logs had
+#        5 "Failed to connect ... EOF" for exactly this reason),
+#   (b) 10 devices do not stampede at the same moment.
 RECONNECT_SETTLE_MIN = 0.5
 RECONNECT_SETTLE_MAX = 2.0
 
 # ------------------------------------------------------------------ #
-# COMMAND DELIVERY (v1.5.2) - "ek click me device chale" wala fix
+# COMMAND DELIVERY (v1.5.2) - the "device reacts on the first click" fix
 #
-# Problem (real logs se): Raylogic device command ka koi ACK nahi bhejta
-# (log1 me 454 TX commands gaye, sirf 11 RX aaye - aur wo 11 bhi app ke
-# apne broadcast the, humare command ka jawab nahi). Aur `writer.write()
-# + drain()` TCP par ek half-dead socket par bhi CHUP-CHAAP "safal" ho
-# jaata hai - drain() sirf itna batata hai ki data OS ke buffer se nikal
-# gaya, ye nahi ki device tak pahuncha. Isliye HA ko kabhi pata hi nahi
-# chalta tha ki command kho gaya - user ko dobara/teesri baar click
-# karna padta tha.
+# Problem (from real logs): a Raylogic device sends no ACK for a command
+# (in log1, 454 TX commands went out and only 11 RX came back - and those
+# 11 were the app's own broadcasts, not replies to our commands). And
+# `writer.write() + drain()` "succeeds" SILENTLY over TCP even on a
+# half-dead socket - drain() only tells us the data left the OS buffer,
+# not that it reached the device. So HA never learned that a command was
+# lost - the user had to click a second or third time.
 #
-# Log1 ke 460 commands me se 337 (73%) aise moment par pade jab
-# connection ya to band ho rahi thi ya abhi-abhi bani thi, aur 159 (35%)
-# to sirf 1.5 second ke andar - yani drop hone ka poora mauka.
+# Of the 460 commands in log1, 337 (73%) landed at a moment when the
+# connection was either closing or had only just been established, and 159
+# (35%) within just 1.5 seconds of that - plenty of opportunity to be
+# dropped.
 #
-# Fix: device se ACK nahi milta, lekin TCP se milta hai. Linux par
-# SIOCOUTQ ioctl se pata chal jaata hai ki socket ke send-queue me
-# kitne bytes abhi tak UN-ACKED pade hain. Command bhejne ke baad hum
-# background me (UI ko bina rok ke) ye queue watch karte hain:
-#   - queue 0 ho gayi  -> device ke TCP stack ne data receive kar liya,
-#                          command pakka pahuncha.
-#   - timeout tak 0 na  -> socket sach me dead hai. Tab HA khud
-#     ho                  connection ko dead mark karta hai, command ko
-#                          queue me daal kar turant reconnect karta hai,
-#                          aur reconnect hote hi command dobara bhej
-#                          deta hai. User ko dobara click karne ki
-#                          zaroorat NAHI.
-# Ye verification background task me chalti hai, isliye entity click ka
-# response turant hi rehta hai (koi UI lag nahi).
+# Fix: the device sends no ACK, but TCP does. On Linux the SIOCOUTQ ioctl
+# tells how many bytes in the socket's send queue are still UN-ACKED.
+# After sending a command we watch this queue in the background (without
+# blocking the UI):
+#   - queue reaches 0      -> the device's TCP stack has received the
+#                              data; the command definitely arrived.
+#   - not 0 by the timeout -> the socket really is dead. HA then marks the
+#                              connection dead itself, queues the command,
+#                              reconnects immediately and re-sends the
+#                              command as soon as it is reconnected. The
+#                              user does NOT need to click again.
+# This verification runs in a background task, so the entity's click
+# response stays immediate (no UI lag).
 #
-# NOTE: SIOCOUTQ Linux-specific hai (HA OS/Docker/Supervised sab Linux
-# hain). Kisi aur platform par ye check apne aap skip ho jaata hai -
-# baaki sab fixes wahan bhi kaam karte hain.
+# NOTE: SIOCOUTQ is Linux-specific (HA OS/Docker/Supervised are all
+# Linux). On any other platform this check is skipped automatically - all
+# the other fixes still work there.
 # ------------------------------------------------------------------ #
 DELIVERY_VERIFY_TIMEOUT = 1.2
 DELIVERY_VERIFY_POLL = 0.05
 
-# Command bhejne se PEHLE ka sanity check: device normally har 6-12s me
-# apna frame bhejta hai. Agar itni der se ekdum khamoshi hai to socket
-# ko "shakki" maano - us par likhne ki koshish karke command gawane se
-# behtar hai ki use queue karke pehle connection refresh kar lo.
+# Sanity check BEFORE sending a command: the device normally sends a frame
+# every 6-12 s. If it has been completely silent for this long, treat the
+# socket as "suspect" - rather than writing to it and losing the command,
+# queue it and refresh the connection first.
 LINK_SUSPECT_SECONDS = 30
 
-# Queue me pada command itna purana ho jaaye to use replay mat karo -
-# tab tak user ne shayad kuch aur hi kar diya hoga, purana command
-# replay karna ulta confusing hoga.
+# Do not replay a queued command that has become this old - by then the
+# user has probably done something else, and replaying an old command
+# would be confusing.
 PENDING_COMMAND_MAX_AGE = 30
 
-# Ek command ko zyada se zyada itni baar bheja jaayega (pehli koshish +
-# retries). Saare commands IDEMPOTENT hain (absolute level bhejte hain,
-# toggle nahi) - relay ON, dimmer 60%, curtain open - inhe dobara bhejna
-# bilkul safe hai. Cap isliye taaki ek sach me down device par HA
-# hamesha ke liye retry karta na rahe.
+# A command is sent at most this many times (first attempt + retries). All
+# commands are IDEMPOTENT (they send an absolute level, not a toggle) -
+# relay ON, dimmer 60%, curtain open - so re-sending them is completely
+# safe. The cap keeps HA from retrying forever against a device that is
+# really down.
 COMMAND_MAX_ATTEMPTS = 4
 
 # ------------------------------------------------------------------ #
@@ -600,167 +594,166 @@ COMMAND_MAX_ATTEMPTS = 4
 # payload only - real wire traffic always carries this <id>,<seq>, prefix.
 # ------------------------------------------------------------------ #
 CLIENT_SENDER_ID = "099"
-# F1 (v1.6.1) - "raylogic" (main/DIN) integration ke saath co-existence:
-# main integration normal commands "003" se bhejta hai aur sirf scene
-# recall "099" se; ye integration sab kuch "099" se. Ye CLASH NAHI hai:
-#   - Sender ID reply-address nahi hai - har integration ka har module ke
-#     saath apna TCP connection hai, device frames usi connection par
-#     lautata hai.
-#   - main integration ka ack-matching sirf node "003" ke echo dekhta hai,
-#     hum "003" kabhi nahi bhejte; hum echo-ack use hi nahi karte (TCP
-#     SIOCOUTQ verify).
-#   - Ek doosre ke "099" *AR= frames dono ke liye keypad/app activity
-#     hain - yahi intended two-way sync hai.
-# "098" jaisi value par MAT badlo jab tak MOD hardware par capture se
-# confirm na ho: firmware node IDs ko alag treat karta hai (query sirf
-# 003 se answer, *BS= sirf 099 recall par) - unknown ID par MOD saare
-# commands chup-chaap ignore kar sakta hai.
-# DIAGNOSTIC NOTE: official Raylogic App device se sirf thodi der ke liye
-# connect hota hai (App khulne par), 24/7 nahi - isliye App mein disconnect
-# problem kabhi dikhta hi nahi. HA iske ulat, SAARE devices se HAMESHA
-# connected rehta hai aur har KEEPALIVE_INTERVAL second mein ping karta
-# hai - in chhote/sasta WiFi modules ke limited TCP stack ke liye ye
-# "hamesha zinda connection + baar-baar ping" wala load unke apne firmware
-# design se zyada hai. Interval 5s se 15s kar diya - taaki fleet-wide
-# protocol chatter kam ho (10 devices x har 5s se ghata kar har 15s), bina
-# responsiveness khoye (HA ka apna optimistic-update + real-time *AR=
-# listener already turant UI update kar deta hai, ye keepalive sirf
-# "connection zinda hai ya nahi" check karne ke liye hai).
+# F1 (v1.6.1) - co-existence with the "raylogic" (main/DIN) integration:
+# the main integration sends normal commands as "003" and only scene
+# recalls as "099"; this integration sends everything as "099". This is
+# NOT a clash:
+#   - The sender ID is not a reply address - each integration has its own
+#     TCP connection to each module, and the device returns frames on that
+#     same connection.
+#   - The main integration's ack matching only looks at echoes from node
+#     "003"; we never send "003", and we do not use echo acks at all (TCP
+#     SIOCOUTQ verification).
+#   - Each other's "099" *AR= frames are keypad/app activity for both -
+#     which is exactly the intended two-way sync.
+# Do NOT change this to a value such as "098" unless confirmed by a capture
+# on MOD hardware: the firmware treats node IDs differently (queries are
+# only answered for 003, *BS= only on a 099 recall) - with an unknown ID a
+# MOD module may silently ignore every command.
+# DIAGNOSTIC NOTE: the official Raylogic app connects to the device only
+# briefly (while the app is open), not 24/7 - which is why the app never
+# shows the disconnect problem. HA, by contrast, stays connected to ALL
+# devices ALL the time and pings every KEEPALIVE_INTERVAL seconds - for the
+# limited TCP stack of these small/cheap Wi-Fi modules, this "always-on
+# connection + frequent pings" load exceeds what their firmware was
+# designed for. The interval was raised from 5 s to 15 s to reduce
+# fleet-wide protocol chatter (10 devices, from every 5 s to every 15 s)
+# without losing responsiveness (HA's optimistic update + real-time *AR=
+# listener already update the UI immediately; this keepalive only checks
+# whether the connection is alive).
 KEEPALIVE_INTERVAL = 15
 
 # ------------------------------------------------------------------ #
 # Periodic resync (soft-reconnect)
 #
-# Confirmed via real-world test: device apna CORRECT, up-to-date state
-# sirf ek NAYE connection ke initial burst par deta hai (isi wajah se
-# Raylogic App band-khol karne par sahi status dikhata hai, chahe HA se
-# change kiya ho). Device kisi bhi channel (Relay ho ya Dimmer) ka state
-# change doosre already-connected sessions ko live broadcast NAHI karta.
+# Confirmed via a real-world test: the device reports its CORRECT,
+# up-to-date state only in the initial burst of a NEW connection (which is
+# why the Raylogic app shows the correct status after being closed and
+# reopened, even for a change made from HA). The device does NOT
+# broadcast state changes of any channel (relay or dimmer) live to other
+# sessions that are already connected.
 #
-# Isliye HA yahan periodically apna connection khud band-khol karta hai
-# (background mein, entities/commands mein koi rukawat nahi) - bilkul
-# App reopen karne jaisa hi effect - taaki dono taraf (App se kiya gaya
-# change HA mein, aur HA se kiya gaya change App mein) kuch hi second mein
-# sync ho jaaye, bina live-push ke bharose rahe.
+# HA therefore closes and reopens its own connection periodically (in the
+# background, with no interruption to entities/commands) - exactly the
+# same effect as reopening the app - so that both directions (a change made
+# in the app shows in HA, and a change made in HA shows in the app) sync
+# within a few seconds, without relying on a live push.
 # ------------------------------------------------------------------ #
-# STABILITY FIX: real-world logs se pata chala ki ye periodic resync
-# khud hi disconnect-cycle ka sabse bada source tha - har 45s mein
-# EVERY device apna TCP band-khol karta tha, aur kai chhote/sasta
-# embedded modules is baar-baar band-khol ko turant handle nahi kar
-# paate (nayi connection khulte hi turant band kar dete - "peer ne
-# connection band kar diya (EOF)"), jisse device baar-baar
-# "Unavailable" dikhta rehta. Interval ko 45s se badha kar 180s (3
-# minute) kar diya - App se hua koi change ab bhi kuch hi minute mein
-# HA mein sync ho jayega, lekin device par band-khol ka load ~4x kam
-# ho gaya hai, jo real-world mein bahut zyada stable dikha.
-# DIAGNOSTIC NOTE (real logs se pata chala): device apni taraf se/network
-# ki taraf se har ~30-40s mein khud disconnect ho rahe hain - ye humare
-# resync interval (180s) se bhi zyada frequent hai, matlab asli disconnects
-# ka MAIN source hamara resync nahi hai. Isliye interval ko 600s (10 min)
-# tak badha diya - taaki resync khud kisi bhi extra churn ka reason na bane,
-# aur agar disconnects fir bhi same rate se aate rahein, to confirm ho
-# jaayega ki ye purely network/device-side hai (WiFi/router/power), code
-# fix se nahi rukega.
-# SOFTWARE-HUB STRATEGY (bina koi hardware kharide): official Raylogic
-# App device se sirf THODI DER ke liye connect hota hai - kabhi 24/7
-# nahi - aur usmein koi disconnect problem nahi dikhti (user ne khud
-# confirm kiya). HA ulta karta tha: 24/7 ek hi connection zinda rakhta
-# tha, jise in modules ka chhota/sasta WiFi chip handle nahi kar paata
-# aur khud hi, UNCONTROLLED tarike se tod deta tha (random EOF).
+# STABILITY FIX: real-world logs showed that this periodic resync was
+# itself the largest source of the disconnect cycle - every 45 s EVERY
+# device closed and reopened its TCP connection, and many small/cheap
+# embedded modules could not handle this repeated close/reopen promptly
+# (they closed the new connection as soon as it opened - "the peer closed
+# the connection (EOF)"), so the device kept showing "Unavailable". The
+# interval was raised from 45 s to 180 s (3 minutes) - a change made in the
+# app still syncs to HA within a few minutes, while the close/reopen load
+# on the device dropped ~4x, which proved much more stable in practice.
+# DIAGNOSTIC NOTE (from real logs): the devices were disconnecting by
+# themselves / from the network side every ~30-40 s - more often than our
+# resync interval (180 s), so our resync is NOT the MAIN source of the real
+# disconnects. The interval was therefore raised to 600 s (10 min) so the
+# resync itself cannot cause any extra churn - and if disconnects kept
+# arriving at the same rate, that would confirm they are purely
+# network/device-side (Wi-Fi/router/power) and cannot be stopped by a
+# code fix.
+# SOFTWARE-HUB STRATEGY (without buying any hardware): the official
+# Raylogic app connects to the device only BRIEFLY - never 24/7 - and shows
+# no disconnect problem (confirmed by the user). HA did the opposite: it
+# kept one connection alive 24/7, which the small/cheap Wi-Fi chip of these
+# modules could not handle, so the module broke it by itself in an
+# UNCONTROLLED way (random EOF).
 #
-# Fix: HUB-1 jaisa external hardware kharidne ki jagah, HA ab khud
-# App jaisa hi short-session pattern follow karta hai - HAR
-# RESYNC_INTERVAL second mein connection ko khud, CONTROLLED tarike se
-# band-khol karta hai (dekho _resync_loop/_soft_reconnect) - device ko
-# kabhi itni der connection zinda dikhti hi nahi ki uska stack "confuse"
-# ho aur khud EOF de. Interval ko 600s (rare touch-up) se ghata kar 25s
-# kar diya - taaki HA hamesha device ki tolerance-limit (~30-40s, jo
-# real logs mein dekha gaya) se PEHLE khud gracefully cycle kar de.
-# Grace-period (UNAVAILABLE_GRACE_SECONDS) is baar bhi UI ko flicker se
-# bachata hai - ye cycling background mein invisible rehni chahiye.
+# Fix: instead of buying external hardware such as a HUB-1, HA now follows
+# the same short-session pattern as the app - every RESYNC_INTERVAL seconds
+# it closes and reopens the connection itself, in a CONTROLLED way (see
+# _resync_loop/_soft_reconnect) - so the device never sees a connection
+# alive long enough for its stack to get "confused" and send an EOF by
+# itself. The interval was lowered from 600 s (a rare touch-up) to 25 s,
+# so HA always cycles gracefully BEFORE the device's tolerance limit
+# (~30-40 s, as seen in real logs). The grace period
+# (UNAVAILABLE_GRACE_SECONDS) again keeps the UI from flickering - this
+# cycling must remain invisible in the background.
 #
-# FINAL FIX (v1.5.0): upar wali "short-session" theory real logs me GALAT
-# nikli. Data ye kehta hai:
-#   - Device 30s+ ki session bilkul theek sambhalta hai. 26 me se 26 EOF
-#     connect ke 30 SECOND ke ANDAR aaye (median session 12s) - matlab
-#     device lambi session se nahi TOOT raha tha, use lambi session MILI
-#     hi nahi thi, kyunki hum har 25s (aur duplicate loops ki wajah se
-#     asal me har 5-13s) me khud hi connection tod rahe the.
-#   - Device apna state khud live broadcast KARTA hai (app se curtain
-#     chalane par *AR= frame HA ki chalti hui connection par aaya) -
-#     matlab resync ka original justification hi galat tha.
-# Isliye ab resync sirf ek DUR ka safety-net hai (15 minute), normal
-# state-sync live push se hota hai. Iske saath _conn_generation guard bhi
-# aa gaya hai taaki purane/duplicate resync loops kabhi na chalein.
+# FINAL FIX (v1.5.0): the "short-session" theory above turned out to be
+# WRONG in real logs. The data says:
+#   - The device handles sessions of 30 s+ perfectly well. All 26 EOFs
+#     came WITHIN 30 SECONDS of connecting (median session 12 s) - so the
+#     device was not BREAKING on long sessions, it simply never GOT a long
+#     session, because we were breaking the connection ourselves every
+#     25 s (and, due to duplicate loops, in practice every 5-13 s).
+#   - The device DOES broadcast its state live (operating a curtain from
+#     the app delivered an *AR= frame on HA's running connection) - so the
+#     original justification for the resync was wrong.
+# The resync is therefore now only a distant safety net (15 minutes);
+# normal state sync happens through the live push. The _conn_generation
+# guard was added at the same time so old/duplicate resync loops never run.
 #
-# FINAL (v1.5.4): ab periodic resync BAND hai (0 = off).
+# FINAL (v1.5.4): the periodic resync is now OFF (0 = off).
 #
-# v1.5.3 ke real log ne ye sab confirm kar diya:
-#   - device-side EOF: 301 se ghat kar 0. Sessions 545 second tak chali
-#     (pehle sab 12s par mar jaati thi) - keepalive fix ne 12-second wali
-#     deewar sach me tod di.
-#   - Us log me connection ke tootne ka EKMATRA baaki source humara apna
-#     resync tha: 9 resync, har ek me device ~1.8s (max 2.6s) DOWN.
-#     Usi window me pada click queue me jaakar wait karta hai - yehi
-#     ekmatra bacha hua "lag" tha.
-#   - Resync ki zaroorat hi nahi rahi: device app/switch se hue changes
-#     khud live *AR= broadcast karta hai, aur connection ab TCP-level par
-#     stable hai (TCP guarantee karta hai ki connected rehte hue koi
-#     frame gum nahi hoga). Agar kabhi connection sach me tootti hai, to
-#     reconnect ke baad device ka initial burst waise bhi fresh state de
-#     deta hai.
-# Isliye 0 = poori tarah band. Koi bhi non-zero value dobara enable kar
-# degi (code us value ko waise hi respect karta hai).
+# The v1.5.3 real log confirmed all of this:
+#   - Device-side EOFs: down from 301 to 0. Sessions lasted up to 545
+#     seconds (previously all died at 12 s) - the keepalive fix really
+#     broke through the 12-second wall.
+#   - In that log the ONLY remaining source of broken connections was our
+#     own resync: 9 resyncs, each leaving the device DOWN for ~1.8 s (max
+#     2.6 s). A click landing in that window waited in the queue - this was
+#     the only remaining "lag".
+#   - The resync is no longer needed: the device itself broadcasts changes
+#     made from the app/switch live as *AR= frames, and the connection is
+#     now stable at the TCP level (TCP guarantees that no frame is lost
+#     while connected). If the connection ever really breaks, the device's
+#     initial burst after reconnecting provides fresh state anyway.
+# Hence 0 = completely off. Any non-zero value re-enables it (the code
+# still honours that value).
 RESYNC_INTERVAL = 0
 
-# STABILITY FIX: pehle resync ke dauran purana socket band karke UPAR
-# SE TURANT (0 second wait) naya connect() try hota tha - kai devices
-# itni jaldi wapas connection accept nahi karte (unhe apna purana
-# socket poori tarah saaf karne ke liye thoda time chahiye hota hai),
-# isliye naya connect() bhi turant EOF de kar fail ho jaata. Ab
-# close karne ke baad ek chhota (~1-2s, per-device random taaki sab
-# devices sync na ho jaayein) "saans lene ka" gap diya jaata hai,
-# taaki device ko apna purana socket cleanup karne ka mauka mile.
+# STABILITY FIX: during a resync the old socket used to be closed and a new
+# connect() attempted IMMEDIATELY (0 second wait) - many devices do not
+# accept a connection again that quickly (they need some time to fully
+# clean up their old socket), so the new connect() also failed immediately
+# with an EOF. Now, after closing, a short "breathing" gap is inserted
+# (~1-2 s, random per device so that not all devices synchronise), giving
+# the device a chance to clean up its old socket.
 SOFT_RECONNECT_SETTLE_MIN = 1.0
 SOFT_RECONNECT_SETTLE_MAX = 2.5
 
 
 # ------------------------------------------------------------------ #
-# Area scenes (v1.6.0) - Raylogic GO app ke area-scenes
-# Wire format (reference "raylogic" integration ke live captures se
-# confirmed): *AR=000F <area> <scene> 00 - ye ek BUS BROADCAST hai, us
-# Area ke saare fixtures react karte hain. Keypad/app se recall hone par
-# yahi frame dusre nodes par echo hota hai - usse select entity ko
-# two-way feedback milta hai. Recall CLIENT_SENDER_ID (099) ke under hi
-# jaata hai, jo app/keypad wala node hai (reference me bhi scene recall
-# isi node se hota hai taaki app me scene "selected" dikhe).
+# Area scenes (v1.6.0) - Raylogic GO app area scenes
+# Wire format (confirmed from live captures made for the reference
+# "raylogic" integration): *AR=000F <area> <scene> 00 - this is a BUS
+# BROADCAST; every fixture in that Area reacts. When a scene is recalled
+# from a keypad/the app, this same frame is echoed to the other nodes -
+# which gives the select entity its two-way feedback. The recall is sent
+# under CLIENT_SENDER_ID (099), the app/keypad node (the reference
+# integration also recalls scenes from this node so the scene shows as
+# "selected" in the app).
 # ------------------------------------------------------------------ #
 SCENE_FUNC = 0x0F
-SCENE_AREAS = 16          # areas 1..16 (AREA_MIN..AREA_MAX jaisa)
+SCENE_AREAS = 16          # areas 1..16 (same as AREA_MIN..AREA_MAX)
 SCENE_MAX = 64            # scene number 1..64
 CONF_SCENE_COUNTS = "scene_counts"
 
-# Scene/select entities kis entry par bane hain, aur kis merged map se -
-# hass.data[SCENE_DATA_KEY] = {"host": entry_id, "map": {...}}. Alag key
-# rakhi hai taaki hass.data[DOMAIN] me sirf RaylogicModDevice objects hi
-# rahein (purana code unhe entry_id se hi padhta hai).
+# Which entry the scene/select entities were created on, and from which
+# merged map - hass.data[SCENE_DATA_KEY] = {"host": entry_id, "map": {...}}.
+# A separate key is used so that hass.data[DOMAIN] only ever contains
+# RaylogicModDevice objects (older code reads them by entry_id).
 SCENE_DATA_KEY = f"{DOMAIN}_scenes"
 
-# Global (entry-independent) dispatcher signal. Scene feedback kisi bhi
-# module se aa sakta hai (jo bhi us bus frame ko sune), isliye ye per-entry
-# nahi hai - lekin inhe sirf scene/select entities sunte hain (areas x
-# scenes jitne), channel entities nahi, isliye scale-fix (per-entry
-# signals) par koi asar nahi.
+# Global (entry-independent) dispatcher signal. Scene feedback can come
+# from any module (whichever hears that bus frame), so it is not
+# per-entry - but only scene/select entities listen to it (as many as
+# areas x scenes), not channel entities, so the scale fix (per-entry
+# signals) is unaffected.
 SIGNAL_AREA_SCENE = f"{DOMAIN}_area_scene"
 
 
 def parse_scene_map(text) -> dict:
     """"area:scene,scene; area:scene" -> {area: [scenes]}.
 
-    Example: "12:1,2,3; 5:1,4" = Area 12 me scene 1,2,3 aur Area 5 me 1,4.
-    Khaali text = koi scene nahi. Galat tokens chup-chaap skip hote hain,
-    ranges clamp hoti hain, kabhi raise nahi karta - ek typo setup nahi
-    tod sakta."""
+    Example: "12:1,2,3; 5:1,4" = scenes 1,2,3 in Area 12 and 1,4 in Area 5.
+    Empty text = no scenes. Invalid tokens are skipped silently, ranges
+    are clamped, and it never raises - a typo can never break setup."""
     result: dict[int, list] = {}
     for block in str(text or "").replace("\n", ";").split(";"):
         area_str, sep, scenes_str = block.strip().partition(":")
@@ -787,8 +780,9 @@ def parse_scene_map(text) -> dict:
 
 
 def merge_scene_maps(option_values) -> dict:
-    """Kai devices ke scene maps ka union - area scenes global hain, isliye
-    scene config KISI BHI ek device ke Configure me daala ja sakta hai."""
+    """Union of the scene maps of several devices - area scenes are global,
+    so the scene config can be entered in the Configure dialog of ANY one
+    device."""
     merged: dict[int, set] = {}
     for text in option_values:
         for area, scenes in parse_scene_map(text).items():
@@ -798,11 +792,11 @@ def merge_scene_maps(option_values) -> dict:
 
 # ------------------------------------------------------------------ #
 # Automatic discovery (v1.6.6) - background LAN scan
-# Reference "raylogic" integration ka AUTO_SCAN pattern (sirf padha gaya,
-# wahan kuch nahi badla): HA start ke thodi der baad pehla scan, phir
-# fixed interval par. Har naya module HA me "Discovered" card ban jaata hai.
+# The AUTO_SCAN pattern of the reference "raylogic" integration (only read,
+# nothing was changed there): the first scan runs shortly after HA starts,
+# then at a fixed interval. Every new module becomes a "Discovered" card in HA.
 # ------------------------------------------------------------------ #
-AUTO_SCAN_FIRST_DELAY = 60        # s - HA startup ko dhima na kare
-AUTO_SCAN_INTERVAL = 1800         # s - 30 min (user ki choice)
-AUTO_SCAN_MAX_SUBNETS = 4         # har scan me max subnets (~1000 hosts)
+AUTO_SCAN_FIRST_DELAY = 60        # s - does not slow down HA startup
+AUTO_SCAN_INTERVAL = 1800         # s - 30 min (the user's choice)
+AUTO_SCAN_MAX_SUBNETS = 4         # max subnets per scan (~1000 hosts)
 CONF_AUTO_DISCOVERY = "auto_discovery"

@@ -1,9 +1,10 @@
-"""Raylogic GO app ke area scenes - HA Scene platform (v1.6.0).
+"""Raylogic GO app area scenes exposed as the Home Assistant Scene platform (v1.6.0).
 
-Area scenes bus-wide hain (kisi ek MOD2U/MOD4U/MOD2F ke channels tak
-seemit nahi), isliye poori installation ke liye EK hi set banta hai, "scene
-host" entry par (dekho __init__.claim_scene_host). Konse area/scene banenge
-ye kisi bhi device ke Configure -> "Area scenes" field se aata hai.
+Area scenes are bus-wide (not limited to the channels of a single
+MOD2U/MOD4U/MOD2F), so exactly ONE set is created for the whole installation,
+on the "scene host" entry (see __init__.claim_scene_host). Which areas and
+scenes are created comes from the "Area scenes" field in the Configure dialog
+of any device.
 """
 from __future__ import annotations
 import logging
@@ -37,14 +38,14 @@ class RaylogicModAreaScene(Scene):
         self._hass = hass
         self._area = area
         self._scene = scene
-        # Address-based aur host-independent: host entry badle to bhi same.
+        # Address-based and host-independent: stays the same if the host entry changes.
         self._attr_unique_id = f"raylogic_mod_area{area}_scene{scene}"
         self._attr_name = f"Area {area} Scene {scene}"
         self._attr_device_info = scenes_device_info()
         self._attr_extra_state_attributes = {"area": area, "scene": scene}
 
-    # available override nahi - baaki raylogic_mod entities ki tarah kabhi
-    # "Unavailable" nahi; offline module ke liye recall queue ho jaata hai.
+    # No `available` override: like the other raylogic_mod entities this never
+    # shows "Unavailable"; a recall for an offline module is queued instead.
 
     async def async_activate(self, **kwargs: Any) -> None:
         await async_recall_area_scene(self._hass, self._area, self._scene)

@@ -1,23 +1,23 @@
 """Raylogic MOD2U / MOD4U TCP protocol client - RE8-style architecture.
 
-Ek hi class (RaylogicModDevice) dono models (MOD2U = 2 channel/1 pair,
-MOD4U = 4 channel/2 pairs) ko handle karta hai - `model` param (const.py
-DEVICE_MODELS) se channel-count decide hoti hai, baaki poora protocol
-logic pair-count-agnostic hai.
+A single class (RaylogicModDevice) handles both models (MOD2U = 2 channels/
+1 pair, MOD4U = 4 channels/2 pairs) - the channel count is decided by the
+`model` parameter (const.py DEVICE_MODELS); the rest of the protocol logic
+is independent of the pair count.
 
-STATIC / config-based channel setup: fixed channel count (model se: 2
-ya 4), area config se ya LEGACY_DEFAULT_AREA (0x0C) se liya jata hai, aur
-har channel ka type (relay/dimmer/fan/curtain/ctc) config_flow se aata
-hai. Relay/Dimmer/Fan/Curtain/CTC sab is mode mein fully working hain
-(inke command formats already confirmed hain).
+STATIC / config-based channel setup: a fixed channel count (from the model:
+2 or 4), the area taken from the config or from LEGACY_DEFAULT_AREA (0x0C),
+and each channel's type (relay/dimmer/fan/curtain/ctc) coming from the
+config flow. Relay/Dimmer/Fan/Curtain/CTC are all fully working in this
+mode (their command formats are already confirmed).
 
-NOTE: pehle yahan ek "AUTO / BR40" mode bhi tha (RE8/H81 jaisa auto-
-discovery, `?BR40=` query se) - MOD2U/MOD4U/MOD2F devices is query ka
-jawab kabhi nahi dete the (confirmed via capture), isliye ye path in
-models ke liye kabhi kaam hi nahi aata tha aur sirf har connect() par
-extra latency (BR40 query wait) add karta tha. User ke kehne par is
-poore BR40 code-path ko hata diya gaya hai - ab sirf static/legacy
-channel setup use hota hai, jo pehle se hi actual working path tha.
+NOTE: there used to be an "AUTO / BR40" mode here as well (RE8/H81-style
+auto-discovery via the `?BR40=` query) - MOD2U/MOD4U/MOD2F devices never
+answer this query (confirmed via capture), so this path never worked for
+these models and only added extra latency (waiting for the BR40 query) to
+every connect(). At the user's request the whole BR40 code path has been
+removed - only the static/legacy channel setup is used now, which was
+always the path that actually worked.
 """
 from __future__ import annotations
 
@@ -34,13 +34,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 try:
-    # SIOCOUTQ (Linux) se pata chalta hai ki socket ke send-buffer me
-    # kitne bytes abhi bhi UN-ACKED pade hain - yehi humara "command
-    # device tak pahuncha ya nahi" ka asli proof hai (device khud koi
-    # ACK nahi bhejta - dekho const.py ka COMMAND DELIVERY block).
-    # HA OS / Supervised / Docker sab Linux hain, lekin agar kabhi kisi
-    # aur platform par chale to ye import fail hone par verification
-    # apne aap silently skip ho jaati hai, baaki sab waise hi chalta hai.
+    # SIOCOUTQ (Linux) reports how many bytes in the socket's send buffer
+    # are still UN-ACKED - this is our real proof of whether a command
+    # reached the device (the device itself sends no ACK - see the COMMAND
+    # DELIVERY block in const.py).
+    # HA OS / Supervised / Docker are all Linux, but if this ever runs on
+    # another platform, the import fails and verification is skipped
+    # silently; everything else keeps working as before.
     import fcntl
 
     _SIOCOUTQ = 0x5411
@@ -122,43 +122,43 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Purani (v1.6.3 tak) jagah - integration folder ke andar, jo HACS update
-# par mit jaati hai. Ab sirf migration ke liye padhi jaati hai (P6).
+# Old location (up to v1.6.3) - inside the integration folder, which is
+# wiped by a HACS update. Now only read for migration (P6).
 _STATE_DIR = Path(__file__).parent / "device_state"
 
-# P2 (v1.6.4): line terminator - confirmed firmware "\r" bhejta hai, lekin
-# kisi firmware ka "\n" ya "\r\n" bhi chal jaaye. Limit wahi asyncio
-# StreamReader default (64 KiB) - usse lamba "line" = garbage, reconnect.
+# P2 (v1.6.4): line terminator - the confirmed firmware sends "\r", but a
+# firmware sending "\n" or "\r\n" must work too. The limit is the asyncio
+# StreamReader default (64 KiB) - a longer "line" is garbage -> reconnect.
 _LINE_END_RE = re.compile(rb"[\r\n]")
 _RX_LINE_LIMIT = 2 ** 16
-# P3: "*AR=" / "+AR40=" jaisa frame-type token (unknown types log-once ke liye)
+# P3: frame-type token such as "*AR=" / "+AR40=" (for logging unknown types once)
 _FRAME_TYPE_RE = re.compile(r"[*+?][A-Z]{2}\d{0,2}=")
-# v1.6.5: *AZ= status se kelvin tabhi update karo jab dono channel ka total
-# output kam se kam itna ho (~10% brightness) - iske neeche byte quantization
-# colour ko nasht kar deta hai (1% par ek channel round hokar off).
+# v1.6.5: only update kelvin from an *AZ= status when the combined output of
+# both channels is at least this much (~10% brightness) - below that, byte
+# quantization destroys the colour information (at 1% one channel rounds
+# to off).
 _AZ_MIN_OUTPUT_FOR_KELVIN = 0.10
 
-# SCALE FIX: pehle koi limit nahi thi ki ek saath kitne devices apna TCP
-# connect() try kar sakte hain - HA startup par (sab config entries
-# lagbhag ek hi waqt setup hote hain), ya jab network/router mein koi
-# chhota hiccup aaye aur bahut saare devices ka resync/reconnect ek
-# saath trigger ho jaaye, 100 devices ek hi second mein 100 naye TCP
-# connections + initial-burst reads try karte the. Chhote network
-# (home router/switch) ya HA host (Raspberry Pi jaisa) par ye burst
-# khud hi timeouts/"connection lost" ka cascade bana deta tha - jo
-# dikhne mein har device ke apne connect() ke fail hone jaisa lagta,
-# lekin asal wajah sirf itni thi ki sab kuch bilkul EK SAATH ho raha
-# tha. Ab poore integration mein ek saath max
-# `_MAX_CONCURRENT_CONNECTS` devices hi apna connect-handshake
-# (TCP open + initial burst read + discovery) chala sakte hain -
-# baaki apni baari ka wait karte hain (thodi der ke liye, chhota sa
-# queue), taaki load hamesha smooth rahe chahe 5 devices ho ya 500.
+# SCALE FIX: there used to be no limit on how many devices could attempt
+# their TCP connect() at the same time - at HA startup (all config entries
+# are set up at roughly the same moment), or when a small hiccup on the
+# network/router triggered a resync/reconnect of many devices at once,
+# 100 devices tried 100 new TCP connections + initial-burst reads within
+# the same second. On a small network (home router/switch) or HA host
+# (such as a Raspberry Pi), this burst by itself caused a cascade of
+# timeouts/"connection lost" - which looked like each device's own
+# connect() failing, while the real cause was simply that everything
+# happened AT THE SAME TIME. Now at most `_MAX_CONCURRENT_CONNECTS`
+# devices across the whole integration can run their connect handshake
+# (TCP open + initial burst read + discovery) concurrently - the rest wait
+# their turn (briefly, in a small queue), so the load always stays smooth,
+# whether there are 5 devices or 500.
 _MAX_CONCURRENT_CONNECTS = 15
 _connect_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CONNECTS)
 
 
 class RaylogicModDevice:
-    """Ek physical MOD2U ya MOD4U module = ek TCP connection."""
+    """One physical MOD2U or MOD4U module = one TCP connection."""
 
     def __init__(
         self,
@@ -177,62 +177,62 @@ class RaylogicModDevice:
         self.port = port
         self.state_callback = state_callback
 
-        # Konsa physical device hai (MOD2U ya MOD4U) - device_info (naam/
-        # model text) ke liye. Har model ka apna DEVICE_MODELS entry
-        # const.py mein hai.
+        # Which physical device this is (MOD2U or MOD4U) - used for
+        # device_info (name/model text). Each model has its own
+        # DEVICE_MODELS entry in const.py.
         self._model = model
         _model_info = DEVICE_MODELS.get(model, DEVICE_MODELS[DEFAULT_MODEL])
         self._model_name: str = _model_info["name"]
         self._model_desc: str = _model_info["desc"]
 
-        # Legacy-mode fallback settings (config_flow se ya defaults se)
+        # Legacy-mode fallback settings (from config_flow or defaults)
         self._legacy_area = legacy_area
         self._legacy_channel_count = legacy_channel_count
-        # Kai installations mein is module ka pehla physical channel number
-        # 1 nahi hota (Area ke andar globally assign hota hai) - jaise
-        # confirm hua ek real capture mein: manually-created "ch1/ch2" kaam
-        # nahi kar rahe the, kyunki us device ke asli channels 3,4 the.
+        # In many installations this module's first physical channel number
+        # is not 1 (it is assigned globally within the Area) - as confirmed
+        # in a real capture: manually created "ch1/ch2" did not work because
+        # that device's real channels were 3 and 4.
         self._channel_start = max(1, channel_start)
-        # Raylogic GO app mein har channel ka jo type set kiya gaya hai
-        # (relay/dimmer/fan/curtain) - device khud ye batata nahi hai, isliye
-        # config_flow se manually aata hai. {ch_num: type_str}
+        # The type set for each channel in the Raylogic GO app
+        # (relay/dimmer/fan/curtain) - the device does not report it itself,
+        # so it comes manually from config_flow. {ch_num: type_str}
         self._channel_types: dict[int, str] = channel_types or {}
-        # CTC channels ke liye: 'single' (CW/WW, *AR= frames) ya 'double'
-        # (warm+cool, *AZ= frames) - config_flow se aata hai. Non-CTC
-        # channels ke liye ignore hota hai.
+        # For CTC channels: 'single' (CW/WW, *AR= frames) or 'double'
+        # (warm+cool, *AZ= frames) - comes from config_flow. Ignored for
+        # non-CTC channels.
         self._channel_ctc_modes: dict[int, str] = channel_ctc_modes or {}
 
-        # LEARN mode: koi manual area/channel count na diya ho to device
-        # khud *AR= echo (app/physical switch se) sunkar Area + Channel
-        # seekhta hai - DIN devices ke BR40 auto-detect jaisa hi result,
-        # bina kisi unknown byte guess kiye (sirf confirmed Relay format
-        # use hota hai: 00 1A <area> <level> <channel>).
+        # LEARN mode: if no manual area/channel count is given, the device
+        # learns Area + Channel by listening to *AR= echoes (from the app/a
+        # physical switch) - the same result as the DIN devices' BR40
+        # auto-detect, without guessing any unknown byte (only the confirmed
+        # relay format is used: 00 1A <area> <level> <channel>).
         self._state_key = f"{ip.replace('.', '_')}_{port}"
-        # P6 (v1.6.4): learned-channels file ab HA ke /config/.storage/
-        # raylogic_mod/ me (__init__.py deta hai) - integration folder HACS
-        # update par replace hota hai aur file mit jaati thi. Purani file
-        # pehli load par copy ho jaati hai (_load_learned).
+        # P6 (v1.6.4): the learned-channels file now lives in HA's
+        # /config/.storage/raylogic_mod/ (provided by __init__.py) - the
+        # integration folder is replaced by a HACS update, which wiped the
+        # file. An old file is copied over on the first load (_load_learned).
         self._state_dir = Path(state_dir) if state_dir else _STATE_DIR
         self._state_file = self._state_dir / f"{self._state_key}_learned.json"
         self._legacy_state_file = _STATE_DIR / f"{self._state_key}_learned.json"
-        # P2: apna RX buffer (\r ya \n dono par line todte hain)
+        # P2: our own RX buffer (lines are split on both \r and \n)
         self._rx_buf = b""
-        # P3/P4/P5: "sirf ek baar" log hone wale messages ki keys
+        # P3/P4/P5: keys of messages that are logged "only once"
         self._logged_once: set = set()
-        # BUG FIX: pehle yahin __init__ (constructor) ke andar hi disk se
-        # synchronously read hota tha - lekin __init__ HA ke event loop se
-        # seedha call hota hai (async_setup_entry se), toh ye blocking
-        # read/write call poore Home Assistant event loop ko (sirf is
-        # integration ko nahi - saari entities/automations/UI) thodi der ke
-        # liye freeze kar sakta tha, khaaskar slow disk (SD card / Pi) par -
-        # exactly wahi "HA hang/stuck" symptom. Ab load asynchronously,
-        # connect() ke andar (thread mein) hota hai - dekho _ensure_learned_loaded().
+        # BUG FIX: this used to read from disk synchronously right here in
+        # __init__ (the constructor) - but __init__ is called directly from
+        # HA's event loop (from async_setup_entry), so this blocking read/
+        # write could freeze the whole Home Assistant event loop (not just
+        # this integration - all entities/automations/UI) for a while,
+        # especially on a slow disk (SD card / Pi) - exactly the "HA
+        # hang/stuck" symptom. It is now loaded asynchronously inside
+        # connect() (in a thread) - see _ensure_learned_loaded().
         self._learned: dict[int, int] = {}  # {ch_num: area}
         self._learned_loaded = False
 
         # switch.py registers this - called with (ch_num, initial_state)
-        # jab bhi koi NAYA channel pehli baar seekha jaaye, taaki entity
-        # turant HA mein dynamically add ho sake.
+        # whenever a NEW channel is learned for the first time, so its entity
+        # can be added to HA dynamically right away.
         self.new_channel_callback: Optional[Callable] = None
 
         self._reader: Optional[asyncio.StreamReader] = None
@@ -242,143 +242,140 @@ class RaylogicModDevice:
         self._listen_task: Optional[asyncio.Task] = None
         self._ka_task: Optional[asyncio.Task] = None
         self._resync_task: Optional[asyncio.Task] = None
-        # STABILITY FIX (v1.5.0) - "connection lost" ka asli root cause.
-        # Har connect()/reconnect() naye _listen/_ka/_resync tasks banata
-        # tha, lekin PURANE tasks kabhi cancel nahi hote the. Purana
-        # resync task apni sleep me pada rehta tha; jab wo uthta, connection
-        # dobara zinda mil jaati aur wo bhi ek soft-reconnect kar deta -
-        # matlab ek hi device par 2, 3, 4... resync loops chalne lagte the.
-        # Real logs me iska asar: RESYNC_INTERVAL 25s hone ke bawajood 94%
-        # resync gaps 20s se KAM the (kuch to 4.8s), aur 10 minute me 202
-        # TCP session khul gaye jinme se 174 humare apne resync ne banaye.
+        # STABILITY FIX (v1.5.0) - the real root cause of "connection lost".
+        # Every connect()/reconnect() created new _listen/_ka/_resync tasks,
+        # but the OLD tasks were never cancelled. An old resync task stayed
+        # in its sleep; when it woke up it found the connection alive again
+        # and performed a soft reconnect of its own - so 2, 3, 4... resync
+        # loops ended up running for the same device. The effect in real
+        # logs: despite RESYNC_INTERVAL being 25 s, 94% of resync gaps were
+        # UNDER 20 s (some as short as 4.8 s), and 202 TCP sessions were
+        # opened in 10 minutes, 174 of them by our own resync.
         #
-        # Ab har safal connect ek naya "generation" number leta hai. Sab
-        # background loops apna generation yaad rakhte hain aur jaise hi
-        # generation badalta hai, khud turant exit ho jaate hain - purane
-        # tasks ka koi asar nahi. Saath me _cancel_bg_tasks() unhe
-        # explicitly cancel bhi karta hai.
+        # Now every successful connect takes a new "generation" number. All
+        # background loops remember their generation and exit immediately as
+        # soon as it changes - old tasks have no effect. In addition,
+        # _cancel_bg_tasks() cancels them explicitly.
         self._conn_generation = 0
-        # Aakhri baar device se KUCH bhi (KA/AR/AZ) kab mila - passive
-        # keepalive aur passive dead-connection detection dono isi par
-        # chalte hain (dekho _keepalive_loop / _listen_loop).
+        # When ANYTHING (KA/AR/AZ) was last received from the device - both
+        # the passive keepalive and the passive dead-connection detection
+        # rely on this (see _keepalive_loop / _listen_loop).
         self._last_rx: float = 0.0
         self._last_tx: float = 0.0
         self._session_started: float = 0.0
-        # Pichhli session kitni der chali - fast-reconnect ka faisla isi
-        # se hota hai (expected ~12s close vs genuine failure).
+        # How long the previous session lasted - this decides fast
+        # reconnect (expected ~12 s close vs genuine failure).
         self._last_session_len: float = 0.0
-        # KEEPALIVE AUTO-TUNING (v1.5.3): device har ~12s me connection
-        # kaat deta hai kyunki uske *KA= ka humara jawab wo pehchaan nahi
-        # pata (humara keepalive akela aisa frame tha jo bina "<id>,"
-        # prefix ke jaata tha). Sahi format guess karne ke bajaye code
-        # khud try karke seekhta hai - dekho const.py ka KEEPALIVE FORMAT
-        # block.
+        # KEEPALIVE AUTO-TUNING (v1.5.3): the device drops the connection
+        # every ~12 s because it does not recognise our reply to its *KA=
+        # (our keepalive was the only frame sent without the "<id>,"
+        # prefix). Instead of guessing the right format, the code learns it
+        # by trying - see the KEEPALIVE FORMAT block in const.py.
         self._ka_variant = 0
         self._ka_variant_locked = False
         self._ka_best: dict[int, float] = {}
         self._last_ka_reply: float = 0.0
-        self._resyncing = False  # soft-reconnect ke dauran duplicate na ho
-        # BUG FIX (repeated-EOF-storm bug): pehle _resync_loop() aur
-        # _keepalive_loop() dono apni "pehli baar random stagger" (100+
-        # devices ka load spread karne ke liye) HAR BAAR fresh se draw
-        # karte the - kyunki har connect()/reconnect() par ek NAYA task
-        # banta hai, aur andar ka `random.uniform(...)` bhi har baar naya
-        # tha. Matlab har reconnect ke baad resync-wait kabhi 25s hota,
-        # kabhi sirf 1-2 second - jab bhi chhota wait lagta, connection
-        # abhi-abhi bane 1-2 second baad hi phir se band-khol ho jaata,
-        # jo device ke fragile WiFi/TCP stack ko confuse kar ke EOF de
-        # deta (isi wajah se log mein baar-baar "peer ne connection band
-        # kar diya (EOF)" dikhta tha) - device instance ki poori lifetime
-        # mein sirf PEHLI baar (HA startup) hi random stagger hona chahiye
-        # tha, har reconnect par nahi. Ye do flags (instance-level,
-        # connect() calls ke across persist karte hain) ab isko track
-        # karte hain - dekho _resync_loop() aur _keepalive_loop() neeche.
+        self._resyncing = False  # prevents duplicates during a soft reconnect
+        # BUG FIX (repeated-EOF-storm bug): _resync_loop() and
+        # _keepalive_loop() both used to draw their "first-time random
+        # stagger" (to spread the load of 100+ devices) afresh EVERY TIME -
+        # because every connect()/reconnect() creates a NEW task, and the
+        # `random.uniform(...)` inside was new each time too. So after each
+        # reconnect the resync wait was sometimes 25 s and sometimes only
+        # 1-2 seconds - whenever a short wait came up, the connection was
+        # closed and reopened just 1-2 seconds after being established,
+        # which confused the device's fragile Wi-Fi/TCP stack into sending
+        # an EOF (which is why the log repeatedly showed "the peer closed
+        # the connection (EOF)"). The random stagger should only happen the
+        # FIRST time in the device instance's whole lifetime (HA startup),
+        # not on every reconnect. These two flags (instance-level,
+        # persisting across connect() calls) now track that - see
+        # _resync_loop() and _keepalive_loop() below.
         self._resync_staggered = False
         self._keepalive_staggered = False
-        # BUG FIX: pehle read-error, write-error, aur periodic-resync teeno
-        # apna-apna independent reconnect/connect() chala sakte the - agar
-        # ek hi time par 2 chal jaate (jaisa real disconnect + resync ka
-        # coincide hona), device par EK SAATH 2 TCP connections khul jaate
-        # the. Ye chhota embedded device isse confuse ho kar atak jaata tha
-        # - HA integration reload karna padta tha. Ab connect() sirf is
-        # lock ke andar hi chalta hai (ek time par ek hi attempt), aur
-        # _reconnecting flag duplicate delayed-retry schedule hone se rokta
-        # hai.
+        # BUG FIX: read errors, write errors and the periodic resync could
+        # each run their own independent reconnect/connect() - if two ran at
+        # the same time (e.g. a real disconnect coinciding with a resync),
+        # TWO TCP connections were opened to the device AT ONCE. This small
+        # embedded device got confused by that and got stuck - the HA
+        # integration had to be reloaded. connect() now only runs inside
+        # this lock (one attempt at a time), and the _reconnecting flag
+        # prevents duplicate delayed retries from being scheduled.
         self._connect_lock = asyncio.Lock()
         self._reconnecting = False
         self._reconnect_task: Optional[asyncio.Task] = None
-        # STABILITY FIX: chhote/turant-recover-hone-wale disconnects (jaise
-        # humara apna periodic resync, ya 5-10s ka network blip) ke liye UI
-        # mein turant "Unavailable" nahi dikhana - dekho _mark_unavailable_soon().
+        # STABILITY FIX: for short disconnects that recover immediately
+        # (such as our own periodic resync, or a 5-10 s network blip), do
+        # not show "Unavailable" in the UI immediately - see
+        # _mark_unavailable_soon().
         self._unavailable_task: Optional[asyncio.Task] = None
-        # UX FIX: pehle agar command bhejte waqt connection down mila
-        # (jaisa hamare apne 25s ke chhote resync-cycle mein bhi ho sakta
-        # hai), command chup-chaap DROP ho jaata tha - sirf ek warning log
-        # hoti thi, user ko UI mein turant pata bhi nahi chalta ki uska
-        # on/off command asal mein device tak pahuncha hi nahi. Ab aisi
-        # commands yahan chhoti si queue mein rakh li jaati hain, aur jaise
-        # hi connection wapas aata hai (kuch second mein), _do_connect()
-        # inhe khud-ba-khud replay/flush kar deta hai - user ko dobara
-        # button dabana nahi padta.
-        # {cmd: str, at: float} - `at` isliye taaki bahut purana command
-        # replay na ho jaaye (dekho PENDING_COMMAND_MAX_AGE).
+        # UX FIX: if the connection was found down while sending a command
+        # (which could even happen during our own short 25 s resync cycle),
+        # the command used to be DROPPED silently - only a warning was
+        # logged, and the user could not tell from the UI that the on/off
+        # command never reached the device. Such commands are now kept in a
+        # small queue here, and as soon as the connection is back (within a
+        # few seconds), _do_connect() replays/flushes them automatically -
+        # the user does not have to press the button again.
+        # {cmd: str, at: float} - `at` ensures a very old command is not
+        # replayed (see PENDING_COMMAND_MAX_AGE).
         self._pending_commands: list[dict] = []
-        # P1 (v1.6.7): "false success" rokne ke liye - har bheje gaye command
-        # ka channel ({full_cmd: ch}), aur us channel ki AAKHRI CONFIRMED state
-        # (command se pehle ki). Module ne command receive kiya (TCP ACK) to
-        # snapshot hata do; command DROP hua (module offline, expire/overflow/
-        # max attempts) to channel wapas isi state par + HA ko update.
+        # P1 (v1.6.7): prevents "false success" - the channel of every
+        # command sent ({full_cmd: ch}) and that channel's LAST CONFIRMED
+        # state (from before the command). When the module receives the
+        # command (TCP ACK) the snapshot is dropped; when the command is
+        # DROPPED (module offline, expiry/overflow/max attempts), the channel
+        # is restored to this state and HA is updated.
         self._cmd_channel: dict[str, int] = {}
         self._pre_state: dict[int, dict] = {}
-        # P3 (v1.6.7): ek outage = ek ERROR + ek WARNING, baaki DEBUG; wapas
-        # aane par ek INFO (kitni der offline raha).
+        # P3 (v1.6.7): one outage = one ERROR + one WARNING, the rest DEBUG;
+        # one INFO when it comes back (how long it was offline).
         self._outage_since: Optional[float] = None
         self._outage_attempts = 0
         self._MAX_PENDING_COMMANDS = 5
-        # COMMAND-DELIVERY FIX (v1.5.2): write aur close kabhi ek saath na
-        # chalein. Pehle _soft_reconnect/_reconnect ka _close_writer_safe()
-        # theek us waqt socket band kar sakta tha jab _send_raw ka data
-        # abhi OS buffer me hi tha - command bina kisi error ke gayab ho
-        # jaata tha. Ab dono ek hi lock ke andar hain.
+        # COMMAND-DELIVERY FIX (v1.5.2): a write and a close must never run
+        # at the same time. Previously _close_writer_safe() from
+        # _soft_reconnect/_reconnect could close the socket exactly while
+        # _send_raw's data was still in the OS buffer - the command vanished
+        # without any error. Both now run inside the same lock.
         self._send_lock = asyncio.Lock()
-        # Chal rahe delivery-verification tasks ke strong references.
+        # Strong references to running delivery-verification tasks.
         self._verify_tasks: set[asyncio.Task] = set()
-        # ON-DEMAND RECONNECT: jab entity ko manually toggle karo ya koi
-        # scene trigger ho jab device disconnect hai, background
-        # _reconnect() loop ka backoff-wait (kabhi kabhi 30s tak) khatam
-        # hone ka intezaar nahi karna - turant ek connect() attempt fire
-        # karo taaki command jaldi se jaldi apply ho jaaye. Dekho
-        # _trigger_on_demand_connect() neeche.
+        # ON-DEMAND RECONNECT: when an entity is toggled manually or a scene
+        # is triggered while the device is disconnected, do not wait for the
+        # background _reconnect() loop's backoff (sometimes up to 30 s) -
+        # fire a connect() attempt immediately so the command is applied as
+        # soon as possible. See _trigger_on_demand_connect() below.
         self._on_demand_task: Optional[asyncio.Task] = None
         # BUG FIX (the big one - device power-cycle "stuck forever" bug):
-        # jab tak _shutdown True na ho (matlab disconnect() /HA unload
-        # explicitly ho), reconnect KABHI permanently give up nahi karega
-        # - dekho _reconnect() neeche.
+        # unless _shutdown is True (i.e. disconnect() / HA unload happened
+        # explicitly), reconnect will NEVER give up permanently - see
+        # _reconnect() below.
         self._shutdown = False
 
         # Device identity
-        self.node_id: Optional[str] = None       # e.g. "101" - device ka apna ID
-        # v1.6.3 (D1): entity unique_id / device identifier ka STABLE base.
-        # Pehle "node_id or ip" tha - node_id sirf tab milta jab *KA= connect
-        # ke 0.6s ke andar aa jaaye (idle module ~6s me bhejta hai), isliye
-        # restart-to-restart unique_id badal jaata tha -> "_2" duplicate
-        # entities + purane orphan. Ab config entry ka unique_id (host_port,
-        # add karte waqt fix) use hota hai - __init__.py set karta hai; ye
-        # default sirf fallback hai (same format).
+        self.node_id: Optional[str] = None       # e.g. "101" - the device's own ID
+        # v1.6.3 (D1): STABLE base of the entity unique_id / device
+        # identifier. It used to be "node_id or ip" - node_id was only known
+        # if *KA= arrived within 0.6 s of connecting (an idle module sends it
+        # every ~6 s), so the unique_id changed from restart to restart ->
+        # "_2" duplicate entities + old orphans. The config entry's unique_id
+        # (host_port, fixed when the device is added) is used now - set by
+        # __init__.py; this default is only a fallback (same format).
         self.stable_id: str = f"{ip}_{port}"
         self.mac: Optional[str] = None
         self.fw_version: Optional[str] = None
 
-        # Curtain frame ka aakhri "run" byte (travel parameter). Default
-        # CURTAIN_RUN_BYTE_DEFAULT hai, lekin jaise hi device se koi real
-        # curtain echo aata hai (app se ya physical switch se chalane par),
-        # us slot ke liye asli value yahan seekh li jaati hai - taaki HA
-        # bilkul wahi bheje jo Raylogic GO app bhejti hai.
+        # The last "run" byte of the curtain frame (travel parameter). The
+        # default is CURTAIN_RUN_BYTE_DEFAULT, but as soon as a real curtain
+        # echo arrives from the device (operated from the app or a physical
+        # switch), the real value for that slot is learned here - so HA
+        # sends exactly what the Raylogic GO app sends.
         # {curtain_slot: run_byte}
         self._curtain_run_bytes: dict[int, int] = {}
 
-        # Device ne *KA= frame mein khud jo Area/channel-range bataye
-        # (self-report) - config verify karne ke liye. Dekho
+        # The Area/channel range the device reported about itself in its
+        # *KA= frame (self-report) - used to verify the config. See
         # _handle_ka_line() / _verify_against_device_report().
         self.detected_area: Optional[int] = None
         self.detected_channel_start: Optional[int] = None
@@ -388,30 +385,29 @@ class RaylogicModDevice:
         # channel_states[ch_num] = {"area": int, "type": str, "on": bool, ...}
         self.channel_states: dict[int, dict] = {}
 
-        # v1.6.0: har Area ka aakhri recall hua scene {area: scene} -
-        # keypad/app echo (*AR=000F..) ya HA ke apne recall se update hota
-        # hai. select.py isse initial value leta hai.
+        # v1.6.0: the last recalled scene per Area {area: scene} - updated
+        # by keypad/app echoes (*AR=000F..) or HA's own recall. select.py
+        # takes its initial value from this.
         self.active_scene: dict[int, int] = {}
 
-        # BUG FIX (v1.5.4, journal-test se pakda gaya): manual-mode ke
-        # channels ab YAHIN, constructor me hi ban jaate hain.
+        # BUG FIX (v1.5.4, found by the journal test): manual-mode channels
+        # are now created RIGHT HERE, in the constructor.
         #
-        # Pehle ye sirf ek SAFAL connect() ke andar (_setup_legacy_channels)
-        # bante the. Matlab agar device us waqt na mila (boot ho raha ho,
-        # WiFi abhi aayi na ho, ya ek connect refuse ho jaaye), to
-        # channel_states KHAALI reh jaata - aur set_relay/set_dimmer/
-        # set_fan/set_cover sabse pehle `area` dhoondhte hain aur na milne
-        # par CHUP-CHAAP return kar jaate the. Entity dikhti thi, click
-        # bhi hota tha, lekin command kabhi bheja hi nahi jaata - na queue
-        # me jaata, na retry hota. Test me ek aisa device 5 me se 0
-        # command bhej paya.
+        # They used to be created only inside a SUCCESSFUL connect()
+        # (_setup_legacy_channels). So if the device was not reachable at
+        # that moment (still booting, Wi-Fi not up yet, or a refused
+        # connect), channel_states stayed EMPTY - and set_relay/set_dimmer/
+        # set_fan/set_cover all look up `area` first and returned SILENTLY
+        # when it was missing. The entity was visible and could be clicked,
+        # but the command was never sent - neither queued nor retried. In
+        # the test, one such device managed to send 0 of 5 commands.
         #
-        # Area aur channel types config_flow se aate hain, device se nahi -
-        # inhe connection ka intezaar karne ki koi zaroorat hi nahi thi.
-        # Ab command hamesha kam se kam queue me chala jaata hai aur
-        # connection banate hi apne aap device tak pahunch jaata hai.
-        # (LEARN mode - area 0 - waise hi connect() par depend karta hai,
-        # kyunki wahan channels device ke apne frames se seekhe jaate hain.)
+        # Area and channel types come from config_flow, not from the device
+        # - there was never any need to wait for the connection. A command
+        # now always at least goes into the queue and reaches the device
+        # automatically once the connection is established.
+        # (LEARN mode - area 0 - still depends on connect(), because there
+        # the channels are learned from the device's own frames.)
         if self._legacy_area and self._legacy_area > 0:
             self._setup_legacy_channels()
 
@@ -441,39 +437,38 @@ class RaylogicModDevice:
         return self._channel_start
 
     def pair_index_for_channel(self, ch_num: int) -> int:
-        """Ye channel is DEVICE ke andar konse pair mein hai (0 = pehla
-        pair, 1 = doosra pair). Sirf display/logging ke liye - curtain ka
-        wire byte iss se NAHI, curtain_slot_for_channel() se banta hai."""
+        """Which pair of this DEVICE the channel belongs to (0 = first pair,
+        1 = second pair). For display/logging only - the curtain wire byte
+        is NOT built from this but from curtain_slot_for_channel()."""
         lo, _hi = self._pair_bounds(ch_num)
         return (lo - self._channel_start) // CHANNELS_PER_PAIR
 
     def curtain_slot_for_channel(self, ch_num: int) -> int:
-        """GLOBAL curtain slot number - yehi curtain frame ka teesra byte
-        hai (const.py ka Curtain block dekho).
+        """GLOBAL curtain slot number - this is the third byte of the
+        curtain frame (see the Curtain block in const.py).
 
-        Raylogic installation mein channel numbers poore system mein
-        globally, hamesha 2-2 ke block mein allot hote hain, isliye kisi
-        bhi pair ka slot uske chhote channel number se seedha derive ho
-        jaata hai:
+        In a Raylogic installation channel numbers are allocated globally
+        across the whole system, always in blocks of 2, so the slot of any
+        pair is derived directly from its lower channel number:
 
-            slot = (pair ka chhota channel + 1) // 2
+            slot = (lower channel of the pair + 1) // 2
 
-        Examples (user ke asli devices se verified):
+        Examples (verified on the user's real devices):
             ch 23-24 (Area 08, MOD2U)  -> slot 12 (0x0C)
             ch 13-14 (Area 12, MOD4U)  -> slot  7 (0x07)
             ch  3-4  (Area 07, MOD4U)  -> slot  2 (0x02)
             ch  5-6  (Area 07, MOD4U)  -> slot  3 (0x03)
 
-        Isi wajah se ab koi bhi device, kisi bhi Area (1-16) mein aur
-        kisi bhi channel number par add karo - curtain ka sahi frame
-        khud ban jaata hai, kuch hardcode karne ki zaroorat nahi."""
+        This is why any device can now be added, in any Area (1-16) and on
+        any channel numbers - the correct curtain frame is built
+        automatically; nothing needs to be hardcoded."""
         lo, _hi = self._pair_bounds(ch_num)
         return (lo + 1) // CHANNELS_PER_CURTAIN_SLOT
 
     def curtain_frame(self, ch_num: int, action: str) -> Optional[str]:
-        """`action` ('open'/'close'/'stop') ke liye poora curtain hex
-        payload banao (*AR= ke baad ka hissa). Ab ye 100% derive hota
-        hai - koi per-pair hardcoded literal nahi."""
+        """Build the full curtain hex payload for `action` ('open'/'close'/
+        'stop') (the part after *AR=). This is now 100% derived - there are
+        no per-pair hardcoded literals."""
         slot = self.curtain_slot_for_channel(ch_num)
         if action == "stop":
             return (
@@ -493,9 +488,9 @@ class RaylogicModDevice:
         )
 
     def _find_curtain_channel(self, slot: int) -> Optional[int]:
-        """Incoming curtain frame ke slot byte se apna configured curtain
-        channel dhoondo (curtain frame mein Area byte hota hi nahi, isliye
-        area se match nahi kiya ja sakta)."""
+        """Find our configured curtain channel from the slot byte of an
+        incoming curtain frame (a curtain frame has no Area byte at all, so
+        it cannot be matched by area)."""
         for cn, st in self.channel_states.items():
             if st.get("type") != CH_TYPE_CURTAIN:
                 continue
@@ -520,26 +515,26 @@ class RaylogicModDevice:
 
     async def _do_connect(self) -> bool:
         if not self._learned_loaded:
-            # Disk read ab thread mein hoti hai (asyncio.to_thread) - event
-            # loop kabhi block nahi hota, chahe disk kitni bhi slow ho.
+            # The disk read now happens in a thread (asyncio.to_thread) - the
+            # event loop is never blocked, however slow the disk is.
             self._learned = await asyncio.to_thread(self._load_learned)
             self._learned_loaded = True
-        # BUG FIX (v1.5.4, stress-test se pakda gaya): naya socket kholne
-        # se PEHLE purana hamesha band karo.
+        # BUG FIX (v1.5.4, caught by the stress test): always close the old
+        # socket BEFORE opening a new one.
         #
-        # Pehle sirf _soft_reconnect() purana socket band karta tha. Baaki
-        # saare raste - EOF (listen loop), delivery-verify fail, write
-        # error, RX silence - sirf `_connected = False` set karte the aur
-        # socket ko waise ka waisa chhod dete the. Peer ne FIN bhej diya
-        # tha, lekin HAMARI taraf se connection kabhi close nahi hoti thi
-        # (half-closed pada rehta tha), aur upar se naya connect() ek AUR
-        # socket khol deta tha. Device ki nazar me ek hi client ke DO
-        # connections - in chhote modules ke liye yehi wo halat hai jisme
-        # wo confuse ho kar atak jaate hain / commands ignore karne lagte
-        # hain. Stress test me 100 me se 44 device par ye reproduce hua.
+        # Previously only _soft_reconnect() closed the old socket. All other
+        # paths - EOF (listen loop), delivery-verify failure, write error,
+        # RX silence - only set `_connected = False` and left the socket as
+        # it was. The peer had sent a FIN, but the connection was never
+        # closed from OUR side (it stayed half-closed), and on top of that a
+        # new connect() opened ANOTHER socket. From the device's point of
+        # view there were TWO connections from a single client - exactly
+        # the situation in which these small modules get confused and hang
+        # or start ignoring commands. The stress test reproduced this on 44
+        # out of 100 devices.
         #
-        # Ab ye ek hi jagah par central fix hai - _do_connect kabhi bhi
-        # purana socket khula chhod kar naya nahi kholta.
+        # This is now a central fix in one place - _do_connect never opens a
+        # new socket while leaving the old one open.
         await self._close_writer_safe()
         self._reader = None
 
@@ -549,34 +544,34 @@ class RaylogicModDevice:
                     asyncio.open_connection(self.ip, self.port),
                     timeout=float(CONNECT_TIMEOUT),
                 )
-                # RESEARCH-BACKED FIX: ye Raylogic modules ESP8266-class
-                # sasta WiFi chip use karte hain - ye chip family ek jaani-
-                # maani quirk ke liye mashhoor hai (ESP8266 Arduino core
-                # issue #2552 jaisi kayi reports): agar TCP par Nagle's
-                # algorithm ON rahe (chhote packets thodi der buffer/delay
-                # hote hain taaki bade packet mein combine ho sakein), to
-                # inka chhota/buggy TCP stack kabhi-kabhi connection ko
-                # khud hi "band" samajh leta hai aur EOF de deta hai.
-                # TCP_NODELAY set karke Nagle's algorithm OFF kar diya -
-                # har chhota command (jaise humara *KA=01) turant bhej
-                # diya jaata hai, buffer mein ruke bina - isse in modules
-                # ke stack ko confuse hone ka mauka kam milta hai.
+                # RESEARCH-BACKED FIX: these Raylogic modules use a cheap
+                # ESP8266-class Wi-Fi chip - a chip family known for a
+                # well-documented quirk (several reports such as ESP8266
+                # Arduino core issue #2552): if Nagle's algorithm is ON for
+                # TCP (small packets are briefly buffered/delayed so they
+                # can be combined into a larger packet), their small/buggy
+                # TCP stack sometimes decides the connection is "closed" on
+                # its own and sends an EOF. Setting TCP_NODELAY turns
+                # Nagle's algorithm OFF - every small command (such as our
+                # *KA=01) is sent immediately without sitting in a buffer,
+                # which gives these modules' stack less chance to get
+                # confused.
                 try:
                     sock = self._writer.get_extra_info("socket")
                     if sock is not None:
                         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 except (OSError, AttributeError) as exc:
                     _LOGGER.debug(
-                        "Raylogic %s: TCP_NODELAY set nahi ho paya (not "
+                        "Raylogic %s: could not set TCP_NODELAY (not "
                         "fatal): %s", self.ip, exc,
                     )
                 self._connected = True
                 self._reconnecting = False
-                self._rx_buf = b""          # P2: naya socket, naya buffer
+                self._rx_buf = b""          # P2: new socket, new buffer
                 self._logged_once.discard("ar40")   # P5: per-session
-                # Naya generation - purane background loops (agar koi abhi
-                # bhi apni sleep me pade hon) is se turant invalid ho jaate
-                # hain aur khud exit kar jaate hain.
+                # New generation - old background loops (if any are still
+                # sitting in their sleep) are invalidated immediately by this
+                # and exit on their own.
                 self._conn_generation += 1
                 gen = self._conn_generation
                 now = self._now()
@@ -588,35 +583,35 @@ class RaylogicModDevice:
                 await self._cancel_bg_tasks()
                 if self._outage_since is not None:
                     _LOGGER.info(
-                        "Raylogic %s %s: wapas online - %.0fs offline raha "
-                        "(%d reconnect koshish).", self._model_name, self.ip,
+                        "Raylogic %s %s: back online - was offline for %.0fs "
+                        "(%d reconnect attempts).", self._model_name, self.ip,
                         now - self._outage_since, self._outage_attempts,
                     )
                     self._outage_since = None
                     self._outage_attempts = 0
                 if prev_session:
                     _LOGGER.info(
-                        "Connected to Raylogic %s at %s (pichhli session %.0fs "
-                        "chali thi)", self._model_name, self.ip, prev_session,
+                        "Connected to Raylogic %s at %s (previous session "
+                        "lasted %.0fs)", self._model_name, self.ip, prev_session,
                     )
                 else:
                     _LOGGER.info(
                         "Connected to Raylogic %s at %s", self._model_name, self.ip,
                     )
 
-                # LATENCY FIX: pehle koi bhi pending/queued command (jaise
-                # on-demand reconnect - user ne button dabaya jab device
-                # disconnect tha) sirf _drain_initial_push() (2.5s fixed
-                # wait) aur poora channel-setup + task-creation complete
-                # hone ke BAAD bheji jaati thi. TCP par likhna (write) aur
-                # padhna (read) do bilkul independent directions hain -
-                # command bhejne ke liye device ka initial burst padhna
-                # (drain) zaroori nahi hai. Isliye ab command TCP connect
-                # hote hi TURANT bhej dete hain, drain/setup ka wait kiye
-                # bina - on-demand reconnect ka real "button-press se
-                # device tak" latency ~2.5-3.5s (pehle ka guaranteed
-                # minimum) se ghat kar sirf TCP handshake time (LAN par
-                # aksar kuch sau millisecond) tak reh jaata hai.
+                # LATENCY FIX: previously any pending/queued command (such as
+                # an on-demand reconnect - the user pressed a button while the
+                # device was disconnected) was only sent AFTER
+                # _drain_initial_push() (a fixed 2.5 s wait) and the whole
+                # channel setup + task creation had completed. Writing and
+                # reading on TCP are two completely independent directions -
+                # sending a command does not require reading (draining) the
+                # device's initial burst. So the command is now sent
+                # IMMEDIATELY once TCP connects, without waiting for drain/
+                # setup - the real "button press to device" latency of an
+                # on-demand reconnect drops from ~2.5-3.5 s (the previous
+                # guaranteed minimum) to just the TCP handshake time (often a
+                # few hundred milliseconds on a LAN).
                 if self._pending_commands:
                     pending, self._pending_commands = self._pending_commands, []
                     fresh = [
@@ -625,47 +620,47 @@ class RaylogicModDevice:
                     ]
                     for p in pending:
                         if (now - p["at"]) > PENDING_COMMAND_MAX_AGE:
-                            self._cmd_dropped(p["cmd"], f"module {PENDING_COMMAND_MAX_AGE}s se zyada offline raha")
+                            self._cmd_dropped(p["cmd"], f"module was offline for more than {PENDING_COMMAND_MAX_AGE}s")
                     stale = len(pending) - len(fresh)
                     if stale:
                         _LOGGER.debug(
-                            "Raylogic %s: %d purane pending command(s) chhod "
-                            "diye (%ds se zyada purane).",
+                            "Raylogic %s: dropped %d stale pending command(s) "
+                            "(older than %ds).",
                             self.ip, stale, PENDING_COMMAND_MAX_AGE,
                         )
                     if fresh:
                         _LOGGER.info(
-                            "Raylogic %s: connection wapas aa gaya - %d pending "
-                            "command(s) TURANT bhej rahe hain (drain/setup se "
-                            "pehle hi, latency kam karne ke liye). User ko "
-                            "dobara click karne ki zaroorat nahi.",
+                            "Raylogic %s: connection restored - sending %d "
+                            "pending command(s) IMMEDIATELY (before drain/"
+                            "setup, to reduce latency). The user does not "
+                            "need to click again.",
                             self.ip, len(fresh),
                         )
-                    # BUG FIX (v1.5.4, stress-test se pakda gaya): pehle
-                    # poori list queue se NIKAL kar ek local loop me bheji
-                    # jaati thi. Agar us loop ke beech me kahin bhi koi
-                    # exception aa jaata (jaise nayi connection ka turant
-                    # mar jaana), to loop wahin ruk jaata aur BACHE HUE
-                    # commands - jo queue se already nikal chuke the -
-                    # hamesha ke liye gayab ho jaate. Mild chaos wale
-                    # stress test me 500 me se 5 command isi tarah gum
-                    # hue (queue khaali, phir bhi deliver nahi).
+                    # BUG FIX (v1.5.4, caught by the stress test): previously
+                    # the whole list was TAKEN OUT of the queue and sent in a
+                    # local loop. If any exception occurred in the middle of
+                    # that loop (such as the new connection dying
+                    # immediately), the loop stopped there and the REMAINING
+                    # commands - already removed from the queue - were lost
+                    # forever. In the mild-chaos stress test, 5 out of 500
+                    # commands were lost this way (queue empty, yet not
+                    # delivered).
                     #
-                    # Ab queue hi unhe "own" karti hai: command tabhi
-                    # nikalta hai jab wo turant bheja ja raha ho, aur agar
-                    # beech me kuch bhi galat ho to baaki sab queue me
-                    # hi safe pade rehte hain (agla connect unhe bhej
-                    # dega). Loop bounded hai taaki _send_raw ka apna
-                    # re-queue karna infinite loop na bana de.
+                    # The queue now "owns" them: a command is only removed
+                    # when it is being sent right away, and if anything goes
+                    # wrong in between, the rest stay safely in the queue
+                    # (the next connect will send them). The loop is bounded
+                    # so that _send_raw's own re-queueing cannot turn it into
+                    # an infinite loop.
                     self._pending_commands = fresh + self._pending_commands
                     for _ in range(len(fresh)):
                         if not self._pending_commands:
                             break
                         p = self._pending_commands.pop(0)
-                        # verify=True taaki replay bhi confirm ho, aur
-                        # queue_on_disconnect=True taaki agar ye nayi
-                        # connection bhi turant mar jaaye to command DROP
-                        # na ho kar dobara queue me chala jaaye.
+                        # verify=True so that the replay is confirmed too,
+                        # and queue_on_disconnect=True so that if this new
+                        # connection also dies immediately, the command is
+                        # re-queued instead of being DROPPED.
                         await self._send_raw(
                             p["cmd"], queue_on_disconnect=True, verify=True,
                             attempt=p.get("attempt", 0),
@@ -673,13 +668,12 @@ class RaylogicModDevice:
 
                 await self._drain_initial_push()
 
-                # BR40 auto-discovery poori tarah hata di gayi hai (user ki
-                # request par) - MOD2U/MOD4U/MOD2F kabhi bhi `?BR40=` query
-                # ka jawab nahi dete the, isliye ye path kabhi kaam hi nahi
-                # aata tha, sirf har connect() par extra latency (BR40
-                # probe wait) add karta tha. Ab seedha static/legacy
-                # channel setup use hota hai - yehi hamesha se actual
-                # working path tha.
+                # BR40 auto-discovery has been removed entirely (at the
+                # user's request) - MOD2U/MOD4U/MOD2F never answered the
+                # `?BR40=` query, so this path never worked and only added
+                # extra latency (the BR40 probe wait) to every connect().
+                # The static/legacy channel setup is used directly now -
+                # which was always the path that actually worked.
                 self._setup_legacy_channels()
 
                 self._listen_task = asyncio.create_task(self._listen_loop(gen))
@@ -693,10 +687,10 @@ class RaylogicModDevice:
                 return True
 
             except Exception as exc:
-                # exc ka str() kabhi khaali bhi ho sakta hai (jaise bare
-                # ConnectionResetError) - type bhi log karo warna log me
-                # sirf "Failed to connect ...:" dikhta hai, koi wajah nahi.
-                # P3 (v1.6.7): ek outage me sirf pehli failure ERROR, baaki DEBUG
+                # str(exc) can be empty (e.g. a bare ConnectionResetError) -
+                # log the type as well, otherwise the log only shows
+                # "Failed to connect ...:" with no reason.
+                # P3 (v1.6.7): only the first failure of an outage is ERROR, the rest DEBUG
                 first = self._outage_since is None
                 if first:
                     self._outage_since = self._now()
@@ -707,11 +701,11 @@ class RaylogicModDevice:
                     f" - {exc}" if str(exc) else "",
                 )
                 self._connected = False
-                # BUG FIX: pehle yahan reader/writer close nahi hote the agar
-                # connect ke baad (jaise auto-discovery step mein) exception aa
-                # jaaye - har 30s retry par ek TCP socket leak hota, jo lambe
-                # samay mein HA host par file-descriptor exhaustion se poore
-                # system ko slow/stuck kar sakta tha.
+                # BUG FIX: previously the reader/writer were not closed here
+                # if an exception occurred after connecting (e.g. in the
+                # auto-discovery step) - every 30 s retry leaked a TCP
+                # socket, which over time could slow down or hang the whole
+                # system through file-descriptor exhaustion on the HA host.
                 await self._close_writer_safe()
                 self._reader = None
                 return False
@@ -721,17 +715,17 @@ class RaylogicModDevice:
         return asyncio.get_event_loop().time()
 
     def _keepalive_frame(self) -> str:
-        """Abhi jo keepalive variant try/lock kiya gaya hai uska poora
-        frame. Dekho const.py ka KEEPALIVE FORMAT block."""
+        """The full frame of the keepalive variant currently being tried/
+        locked. See the KEEPALIVE FORMAT block in const.py."""
         template = KEEPALIVE_VARIANTS[self._ka_variant % len(KEEPALIVE_VARIANTS)]
         return template.format(
             id=CLIENT_SENDER_ID, seq=self._next_msg(), cmd=KEEPALIVE_CMD,
         )
 
     def _record_session_result(self, length: float) -> None:
-        """Session khatam hone par: is keepalive variant ne kitni der
-        connection zinda rakhi, ye yaad rakho aur agar ye 12-second wali
-        deewar tod raha hai to isi ko lock kar do."""
+        """When a session ends: remember how long this keepalive variant
+        kept the connection alive, and lock it in if it breaks the
+        12-second wall."""
         self._last_session_len = length
         if self._ka_variant_locked:
             return
@@ -740,28 +734,28 @@ class RaylogicModDevice:
         if length >= KEEPALIVE_GOOD_SESSION:
             self._ka_variant_locked = True
             _LOGGER.info(
-                "Raylogic %s %s: keepalive format '%s' ne connection %.0fs "
-                "tak zinda rakhi (device ka ~12s wala auto-disconnect toot "
-                "gaya) - ab hamesha yahi format use hoga.",
+                "Raylogic %s %s: keepalive format '%s' kept the connection "
+                "alive for %.0fs (the device's ~12s auto-disconnect was "
+                "broken) - this format will always be used from now on.",
                 self._model_name, self.ip, KEEPALIVE_VARIANTS[idx], length,
             )
             return
-        # Is variant se baat nahi bani - agle connect par agla try karo.
+        # This variant did not work - try the next one on the next connect.
         self._ka_variant += 1
         nxt = self._ka_variant % len(KEEPALIVE_VARIANTS)
         _LOGGER.debug(
-            "Raylogic %s: keepalive format '%s' se session sirf %.0fs chali "
-            "- agla format try kar rahe hain: '%s'",
+            "Raylogic %s: with keepalive format '%s' the session only lasted "
+            "%.0fs - trying the next format: '%s'",
             self.ip, KEEPALIVE_VARIANTS[idx], length, KEEPALIVE_VARIANTS[nxt],
         )
 
     async def _answer_device_keepalive(self) -> None:
-        """Device har ~6s me apna *KA= bhejta hai aur uska JAWAB maangta
-        hai - do jawab miss hone par (6x2 = wahi 12 second) wo connection
-        kaat deta hai. Isliye ab hum har device-KA ka turant jawab dete
-        hain (purana code fixed timer par, aur bina prefix ke, bhejta tha
-        - dekho const.py). Rate-limit isliye ki agar device kabhi burst
-        me KA bheje to hum spam na karein."""
+        """The device sends its own *KA= every ~6 s and expects a REPLY -
+        after two missed replies (6x2 = the same 12 seconds) it drops the
+        connection. So we now reply to every device KA immediately (the old
+        code sent on a fixed timer, and without the prefix - see const.py).
+        It is rate-limited so that we do not spam if the device ever sends
+        KAs in a burst."""
         if not self._connected or self._shutdown:
             return
         if self._last_ka_reply and (
@@ -772,18 +766,17 @@ class RaylogicModDevice:
         await self._send_raw(self._keepalive_frame())
 
     async def _cancel_bg_tasks(self):
-        """Purane listen/keepalive/resync tasks band karo.
+        """Stop the old listen/keepalive/resync tasks.
 
-        STABILITY FIX (v1.5.0): pehle ye kabhi hota hi nahi tha - har
-        reconnect naye tasks bana deta tha aur purane apni sleep me zinda
-        pade rehte the. Wo baad me uth kar apna kaam (khaaskar resync ka
-        connection band-khol) dobara kar dete the, jis se ek hi device par
-        multiple resync loops jam jaate the aur connection lagataar tootne
-        lagti thi.
+        STABILITY FIX (v1.5.0): this never used to happen - every reconnect
+        created new tasks while the old ones stayed alive in their sleep.
+        Later they woke up and did their work again (especially the resync's
+        close/reopen of the connection), so multiple resync loops piled up
+        on a single device and the connection kept breaking.
 
-        Apne aap ko cancel nahi karte (soft-reconnect khud _resync_loop ke
-        andar se hi chalta hai) - us case me _conn_generation guard purane
-        task ko turant exit karwa deta hai."""
+        A task does not cancel itself (the soft reconnect runs from inside
+        _resync_loop itself) - in that case the _conn_generation guard makes
+        the old task exit immediately."""
         current = asyncio.current_task()
         for attr in ("_listen_task", "_ka_task", "_resync_task"):
             task = getattr(self, attr, None)
@@ -793,20 +786,21 @@ class RaylogicModDevice:
                 setattr(self, attr, None)
 
     async def _close_writer_safe(self):
-        """BUG FIX: writer.close() + wait_closed() ko hamesha CLOSE_TIMEOUT
-        ke andar wrap karo. Pehle koi upper-bound nahi tha, isliye agar
-        device TCP connection cleanly close na kare (flaky network / sasta
-        embedded device), to wait_closed() bina kisi limit ke atak sakta
-        tha - "connect() phir se kuch der atak jaata hai" wale symptom ka
-        yehi root cause tha. Ab timeout hone par bhi hum writer ko discard
-        kar dete hain (best-effort close), taaki caller kabhi CLOSE_TIMEOUT
-        se zyada wait na kare."""
+        """BUG FIX: always wrap writer.close() + wait_closed() in
+        CLOSE_TIMEOUT. Previously there was no upper bound, so if the
+        device did not close the TCP connection cleanly (flaky network /
+        cheap embedded device), wait_closed() could hang without any limit
+        - this was the root cause of the "connect() hangs for a while
+        again" symptom. Now the writer is discarded even on timeout
+        (best-effort close), so the caller never waits longer than
+        CLOSE_TIMEOUT."""
         if not self._writer:
             return
-        # COMMAND-DELIVERY FIX (v1.5.2): send-lock lekar close karo, taaki
-        # koi abhi-abhi likha hua command beech me hi truncate na ho jaaye.
-        # Lock par bhi timeout - agar kisi wajah se lock fansa reh jaaye to
-        # close phir bhi hona chahiye (warna reconnect atak jaayega).
+        # COMMAND-DELIVERY FIX (v1.5.2): close while holding the send lock,
+        # so that a command that has just been written is not truncated
+        # mid-way. The lock also has a timeout - if the lock is ever stuck
+        # for some reason, the close must still happen (otherwise reconnect
+        # would hang).
         try:
             await asyncio.wait_for(
                 self._send_lock.acquire(), timeout=float(CLOSE_TIMEOUT)
@@ -831,10 +825,10 @@ class RaylogicModDevice:
                 self._send_lock.release()
 
     async def disconnect(self):
-        # Sabse pehle set karo - taaki agar ek reconnect-loop already chal
-        # raha ho (device abhi bhi down hai), wo apni agli sleep/attempt ke
-        # baad khud ruk jaaye, HA unload/reload hone ke baad bhi background
-        # mein hamesha ke liye chalta na rahe.
+        # Set this first - so that if a reconnect loop is already running
+        # (the device is still down), it stops on its own after its next
+        # sleep/attempt and does not keep running forever in the background
+        # after an HA unload/reload.
         self._shutdown = True
         self._connected = False
         for task in (
@@ -847,102 +841,99 @@ class RaylogicModDevice:
         await self._close_writer_safe()
 
     async def _reconnect(self):
-        """BUG FIX (THE main "device power-cycle ke baad HA hamesha ke
-        liye atka reh jaata hai" bug): pehle ye function sirf EK BAAR,
-        30 second baad, dobara connect() try karta tha - agar wahi ek
-        attempt (jaise device abhi boot ho hi raha ho, ya thoda aur der
-        se network par aaye) fail ho jaata, to `finally` mein
-        `_reconnecting = False` reset ho jaata aur function seedha khatam
-        ho jaata - koi aage ka retry KABHI schedule nahi hota. Chunki
-        `_send_raw()` (jab `_connected` pehle se hi False ho) command ko
-        chup-chaap DROP kar deta hai bina dobara `_schedule_reconnect()`
-        call kiye, integration hamesha ke liye "disconnected" state mein
-        permanently atak jaata - device wapas ping/reachable ho jaane ke
-        baad bhi, jab tak koi HA ko manually reload/restart na kare.
-        Real-world mein device power-cycle (off phir on) 30 second se
-        zyada le hi leta hai boot hone mein, isliye ye almost hamesha
-        trigger ho jaata tha - exactly wahi symptom jo report hua tha:
-        device wapas up + pingable, lekin HA entities hamesha ke liye
-        unavailable/stuck.
+        """BUG FIX (THE main "HA stays stuck forever after a device power
+        cycle" bug): previously this function retried connect() only ONCE,
+        after 30 seconds - if that single attempt failed (e.g. the device
+        was still booting, or came onto the network a little later),
+        `_reconnecting = False` was reset in `finally` and the function
+        simply ended - no further retry was EVER scheduled. Since
+        `_send_raw()` (when `_connected` is already False) silently DROPPED
+        the command without calling `_schedule_reconnect()` again, the
+        integration got permanently stuck in the "disconnected" state -
+        even after the device was back and pingable, until someone reloaded
+        or restarted HA manually. In the real world a device power cycle
+        (off then on) takes more than 30 seconds to boot, so this triggered
+        almost every time - exactly the reported symptom: the device back
+        up and pingable, but the HA entities unavailable/stuck forever.
 
-        Fix: ab ye ek proper LOOP hai - jab tak connect() safal na ho
-        jaaye YA integration explicitly disconnect/unload na ho jaaye
-        (`_shutdown`), har 30 second par dobara try karta rehta hai,
-        bilkul us "retrying in 30s" log message jaisa jo already tha
-        (bas ab woh sach mein baar-baar retry bhi karta hai)."""
+        Fix: this is now a proper LOOP - it keeps retrying every 30 seconds
+        until connect() succeeds OR the integration is explicitly
+        disconnected/unloaded (`_shutdown`), just like the "retrying in
+        30s" log message that already existed (except that now it really
+        does retry repeatedly)."""
         try:
-            # STABILITY FIX: turant "available: False" fire nahi karte -
-            # ek chhota grace-timer shuru karo (dekho _mark_unavailable_soon).
-            # Agar niche wala backoff-loop grace window ke andar hi
-            # reconnect kar leta hai, UI mein kabhi flicker nahi dikhega.
+            # STABILITY FIX: do not fire "available: False" immediately -
+            # start a short grace timer (see _mark_unavailable_soon). If the
+            # backoff loop below reconnects within the grace window, the UI
+            # never shows a flicker.
             self._mark_unavailable_soon()
             attempt = 0
-            # FAST RECONNECT (v1.5.3): agar pichhli session normal lambi
-            # chali thi, to ye device ka expected ~12s auto-disconnect hai,
-            # koi failure nahi - turant wapas jud jao. Measured impact:
-            # har cycle ~2.3s downtime se ghat kar ~0.1s, uptime 84% -> 98%.
+            # FAST RECONNECT (v1.5.3): if the previous session lasted a
+            # normal long time, this is the device's expected ~12 s
+            # auto-disconnect, not a failure - reconnect immediately.
+            # Measured impact: downtime per cycle dropped from ~2.3 s to
+            # ~0.1 s, uptime 84% -> 98%.
             fast = self._last_session_len >= FAST_RECONNECT_MIN_SESSION
             while not self._connected and not self._shutdown:
                 if fast and attempt == 0:
                     delay = FAST_RECONNECT_DELAY
                     _LOGGER.debug(
-                        "Raylogic %s %s: expected auto-disconnect - turant "
-                        "reconnect (%.2fs).", self._model_name, self.ip, delay,
+                        "Raylogic %s %s: expected auto-disconnect - "
+                        "reconnecting immediately (%.2fs).", self._model_name, self.ip, delay,
                     )
                 else:
                     delay = RECONNECT_BACKOFF_STEPS[
                         min(attempt, len(RECONNECT_BACKOFF_STEPS) - 1)
                     ]
-                    # P3: disconnect ki wajah pehle hi (read error / send error /
-                    # silence / session) log ho chuki hoti hai - ye retry line
-                    # usi event ka duplicate thi, isliye DEBUG.
+                    # P3: the reason for the disconnect (read error / send
+                    # error / silence / session) has already been logged -
+                    # this retry line duplicated that event, hence DEBUG.
                     _LOGGER.debug(
                         "Raylogic %s %s: connection lost, retrying in %ds",
                         self._model_name, self.ip, delay,
                     )
                 if self._outage_since is None:
                     self._outage_since = self._now()
-                # P1: offline rehte hue bhi purane queued commands expire +
-                # revert (HA ~30s me sach dikhaye)
+                # P1: expire + revert old queued commands even while offline
+                # (so HA shows the truth within ~30 s)
                 self._expire_pending()
                 attempt += 1
                 await asyncio.sleep(delay)
                 if self._shutdown:
                     return
                 if fast and attempt == 1:
-                    # Expected close - settle-gap ki zaroorat nahi (device
-                    # ne khud, cleanly, band ki thi).
+                    # Expected close - no settle gap needed (the device
+                    # closed it itself, cleanly).
                     try:
                         await self.connect()
                     except Exception as exc:
                         _LOGGER.error(
-                            "Raylogic %s %s: fast-reconnect me error: %s",
+                            "Raylogic %s %s: error during fast reconnect: %s",
                             self._model_name, self.ip, exc,
                         )
                     fast = False
                     continue
-                # STABILITY FIX (v1.5.0): reconnect se pehle ek chhota
-                # random settle-gap. Real logs me 5 baar "Failed to connect
-                # ... peer ne connection band kar diya (EOF)" aaya tha -
-                # matlab module ne TCP to accept kar liya lekin turant band
-                # kar diya, kyunki uska purana socket abhi cleanup hua hi
-                # nahi tha. Soft-reconnect me ye gap pehle se tha, lekin
-                # is (asli failure wale) raste par nahi tha. Random hone se
-                # 10 devices ek saath stampede bhi nahi karte.
+                # STABILITY FIX (v1.5.0): a short random settle gap before
+                # reconnecting. Real logs showed "Failed to connect ... the
+                # peer closed the connection (EOF)" 5 times - i.e. the module
+                # accepted the TCP connection but closed it immediately,
+                # because its old socket had not been cleaned up yet. The
+                # soft reconnect already had this gap, but this (genuine
+                # failure) path did not. Being random also prevents 10
+                # devices from stampeding at once.
                 await asyncio.sleep(
                     random.uniform(RECONNECT_SETTLE_MIN, RECONNECT_SETTLE_MAX)
                 )
                 if self._shutdown:
                     return
-                # connect() khud _connected set karta hai (safal hone par
-                # True) - loop condition apne aap dobara check kar lega,
-                # safal hote hi loop yahi ruk jaayega. Fail hua to koi
-                # exception yahan tak nahi aani chahiye (_do_connect apne
-                # andar hi sab exceptions handle karta hai aur False
-                # return karta hai) - lekin ek extra safety net rakhte
-                # hain taaki koi anexpected exception is poore retry-loop
-                # ko crash na kar de (jo phir se wahi "permanently stuck"
-                # bug wapas la deta).
+                # connect() sets _connected itself (True on success) - the
+                # loop condition re-checks it automatically and the loop
+                # stops right here as soon as it succeeds. On failure no
+                # exception should reach this point (_do_connect handles all
+                # exceptions internally and returns False) - but an extra
+                # safety net is kept so that no unexpected exception can
+                # crash this whole retry loop (which would bring back the
+                # same "permanently stuck" bug).
                 try:
                     await self.connect()
                 except Exception as exc:
@@ -955,15 +946,14 @@ class RaylogicModDevice:
             self._reconnecting = False
 
     def _mark_unavailable_soon(self):
-        """Disconnect hote hi turant entity ko 'Unavailable' mat dikhao.
-        UNAVAILABLE_GRACE_SECONDS ka ek chhota grace-window shuru karo -
-        agar usi window ke andar-andar connect() wapas safal ho jaata hai
-        (jaisa zyadatar chhote blips/resync-hiccups mein hota hai), koi
-        state_callback fire hi nahi hoga - matlab HA UI mein kabhi
-        'Unavailable' flicker dikhega hi nahi. Sirf genuine, lambi outage
-        ke liye hi entity Unavailable dikhegi."""
+        """Do not show the entity as 'Unavailable' the moment a disconnect
+        happens. Start a short UNAVAILABLE_GRACE_SECONDS grace window - if
+        connect() succeeds again within that window (as happens with most
+        short blips/resync hiccups), no state_callback fires at all - so the
+        HA UI never shows an 'Unavailable' flicker. The entity is shown as
+        Unavailable only for a genuine, long outage."""
         if self._unavailable_task and not self._unavailable_task.done():
-            return  # ek grace-timer already pending hai, dobara mat lagao
+            return  # a grace timer is already pending, do not start another
         self._unavailable_task = asyncio.create_task(self._unavailable_after_grace())
 
     async def _unavailable_after_grace(self):
@@ -975,29 +965,28 @@ class RaylogicModDevice:
             pass
 
     def _cancel_unavailable_grace(self):
-        """connect() safal hote hi call hota hai - agar grace-timer abhi
-        pending tha (matlab UI mein 'Unavailable' abhi tak dikha hi nahi
-        tha), use cancel kar do taaki wo late-fire ho kar galti se
-        already-wapas-connected device ko unavailable na dikha de."""
+        """Called as soon as connect() succeeds - if the grace timer was
+        still pending (i.e. 'Unavailable' had not been shown in the UI yet),
+        cancel it so it does not fire late and wrongly show an
+        already-reconnected device as unavailable."""
         if self._unavailable_task and not self._unavailable_task.done():
             self._unavailable_task.cancel()
         self._unavailable_task = None
 
     def _schedule_reconnect(self):
-        """Read-error, write-error, ya resync-fail - kahin se bhi reconnect
-        chahiye ho, hamesha isi se guzro - taaki ek time par sirf EK
-        reconnect-loop chale (device par 2 TCP connections ek saath khulne
-        se device khud confuse ho kar atak jaata tha, HA reload karna
-        padta tha).
+        """Whenever a reconnect is needed - read error, write error or
+        resync failure - always go through this, so that only ONE reconnect
+        loop runs at a time (2 TCP connections opened to the device at once
+        confused the device itself and it hung; HA had to be reloaded).
 
-        BUG FIX: pehle `_reconnecting = True` sirf `_reconnect()` coroutine
-        ke ANDAR set hota tha - lekin ek naya asyncio task create hone ke
-        baad turant nahi chalta (event loop ko turn milne tak wait karta
-        hai). Agar isi synchronous stack ke andar `_schedule_reconnect()`
-        dobara (jaldi jaldi, jaise ek connect-failure cascade mein) call ho
-        jaaye, purana task abhi shuru hi nahi hua hota - flag abhi bhi
-        False dikhta, aur DUPLICATE reconnect tasks ban jaate the. Ab flag
-        yahin, task create hone se PEHLE, synchronously set hota hai."""
+        BUG FIX: previously `_reconnecting = True` was only set INSIDE the
+        `_reconnect()` coroutine - but a newly created asyncio task does not
+        run immediately (it waits until the event loop gets a turn). If
+        `_schedule_reconnect()` was called again within the same
+        synchronous stack (in quick succession, e.g. in a connect-failure
+        cascade), the old task had not even started yet - the flag still
+        read False, and DUPLICATE reconnect tasks were created. The flag is
+        now set right here, synchronously, BEFORE the task is created."""
         if self._shutdown:
             return
         if not self._reconnecting:
@@ -1005,122 +994,118 @@ class RaylogicModDevice:
             self._reconnect_task = asyncio.create_task(self._reconnect())
 
     def _trigger_on_demand_connect(self):
-        """User ne entity toggle ki, ya koi scene trigger hui, jab device
-        disconnect state mein tha - iske liye background `_reconnect()`
-        loop ka apna backoff-schedule (jo ek genuine outage ke case mein
-        1s se badhte hue 15s/30s tak pahunch sakta hai) khatam hone ka
-        wait nahi karna chahiye, warna command minute-scale tak "queued"
-        hi padi reh sakti hai.
+        """The user toggled an entity, or a scene was triggered, while the
+        device was disconnected - for this we should not wait for the
+        background `_reconnect()` loop's own backoff schedule (which, in a
+        genuine outage, can grow from 1 s up to 15 s/30 s), otherwise the
+        command could stay "queued" on a minute scale.
 
-        Ye function turant, alag se, ek best-effort `connect()` attempt
-        fire karta hai (fire-and-forget task) - safe hai kyunki:
-          - `connect()` khud `_connect_lock` ke andar hai, isliye ye aur
-            background `_reconnect()` loop kabhi ek saath do TCP
-            connections nahi kholenge (jo bhi pehle lock le, dusra uske
-            baad `_connected` already True dekh kar turant no-op ho
-            jaayega).
-          - `_do_connect()` module-level `_connect_semaphore` se bhi
-            gated hai, isliye 100+ device installation mein bhi ek saath
-            bahut saare on-demand attempts "thundering herd" nahi
-            banate - wahi existing global concurrency-limit yahan bhi
-            apply hoti hai.
-        Agar ye attempt fail ho jaaye (device sach mein abhi down hai),
-        koi problem nahi - background `_reconnect()` loop already chal
-        raha hai (ise `_schedule_reconnect()` ne start kiya tha jab
-        connection tooti thi) aur apna normal backoff-retry jaari
-        rakhega.
+        This function immediately fires a separate best-effort `connect()`
+        attempt (a fire-and-forget task) - this is safe because:
+          - `connect()` itself runs inside `_connect_lock`, so this and the
+            background `_reconnect()` loop will never open two TCP
+            connections at the same time (whichever takes the lock first
+            wins; the other then sees `_connected` already True and becomes
+            a no-op immediately).
+          - `_do_connect()` is also gated by the module-level
+            `_connect_semaphore`, so even in a 100+ device installation many
+            simultaneous on-demand attempts do not create a "thundering
+            herd" - the same existing global concurrency limit applies
+            here too.
+        If this attempt fails (the device really is down right now), that
+        is no problem - the background `_reconnect()` loop is already
+        running (it was started by `_schedule_reconnect()` when the
+        connection broke) and will continue its normal backoff retry.
         """
         if self._connected or self._shutdown:
             return
         if self._on_demand_task and not self._on_demand_task.done():
-            return  # ek on-demand attempt already pending hai, dobara mat lagao
+            return  # an on-demand attempt is already pending, do not start another
         self._on_demand_task = asyncio.create_task(self._on_demand_connect())
 
     async def _on_demand_connect(self):
         try:
             await self.connect()
         except Exception as exc:
-            # connect()/_do_connect() apne andar hi saari exceptions handle
-            # karte hain aur False return karte hain - lekin extra safety
-            # net rakhte hain taaki ye fire-and-forget task kabhi bhi
-            # "Task exception was never retrieved" jaisi unhandled warning
-            # na de. Background _reconnect() loop retry jaari rakhega.
+            # connect()/_do_connect() handle all exceptions internally and
+            # return False - but an extra safety net is kept so that this
+            # fire-and-forget task never produces an unhandled warning such
+            # as "Task exception was never retrieved". The background
+            # _reconnect() loop will keep retrying.
             _LOGGER.debug(
-                "Raylogic %s: on-demand reconnect attempt fail hua (normal "
-                "background retry loop chalta rahega): %s", self.ip, exc,
+                "Raylogic %s: on-demand reconnect attempt failed (the normal "
+                "background retry loop keeps running): %s", self.ip, exc,
             )
 
     async def _resync_loop(self, gen: int):
-        """Har RESYNC_INTERVAL second mein connection ko khud band-khol
-        karta hai - App reopen karne jaisa hi effect, taaki Raylogic App se
-        kiya gaya koi bhi change (jo live-broadcast nahi hota) kuch second
-        mein HA mein bhi reflect ho jaaye. HA se bheji gayi commands (jo
-        instantly optimistically apply hoti hain) is se disturb nahi hoti.
+        """Closes and reopens the connection every RESYNC_INTERVAL seconds -
+        the same effect as reopening the App, so that any change made from
+        the Raylogic App (which is not live-broadcast) is reflected in HA
+        within a few seconds. Commands sent from HA (which are applied
+        optimistically and instantly) are not disturbed by this.
 
-        SCALE FIX: pehle pehli sleep bhi seedha RESYNC_INTERVAL (fixed 45s)
-        thi - iska matlab agar bahut saare devices (50-100+) HA startup ke
-        thodi der ke andar-andar add/connect hote hain, to unke resync-cycle
-        andar-andar EXACTLY sync ho jaate the, aur har ~45s mein SAARE
-        devices EK SAATH apna TCP connection band-khol karte the
-        ("thundering herd") - ye ek chhote device (Raspberry Pi jaisa) par
-        CPU/network spike de sakta hai jo HA ko thodi der ke liye
-        unresponsive kar de. Isliye pehli cycle ka wait RANDOM hai (0 se
-        RESYNC_INTERVAL ke beech, per-device alag) taaki 100+ devices ka
-        load poore 45-second window mein spread ho jaaye, na ki ek hi pal
-        mein.
+        SCALE FIX: previously the first sleep was also exactly
+        RESYNC_INTERVAL (a fixed 45 s) - which meant that if many devices
+        (50-100+) were added/connected shortly after HA startup, their
+        resync cycles became EXACTLY synchronized, and every ~45 s ALL
+        devices closed and reopened their TCP connections AT ONCE
+        ("thundering herd") - on a small host (such as a Raspberry Pi) this
+        could cause a CPU/network spike that made HA unresponsive for a
+        while. So the first cycle's wait is RANDOM (between 0 and
+        RESYNC_INTERVAL, different per device) so that the load of 100+
+        devices is spread across the whole 45-second window instead of a
+        single moment.
 
-        BUG FIX (repeated-EOF-storm bug): pehle ye "random pehli baar"
-        wait HAR baar dobara fresh se draw hota tha - kyunki ye function
-        khud har naye connect()/soft-reconnect() ke baad ek NAYE task ke
-        roop mein phir se shuru hota hai (dekho _do_connect), aur
-        `random.uniform(...)` bhi wahin call ke andar tha. Matlab pehla
-        cycle to theek tha, lekin USKE BAAD ka HAR resync bhi phir se
-        random hi tha - kabhi 25s, lekin kabhi sirf 1-2 second bhi aa
-        sakta tha. Jab bhi wo chhota wait aata, connection abhi-abhi
-        bane 1-2 second baad hi dobara jaan-boojh kar band-khol ho jaata
-        - jis se device ka fragile WiFi/TCP stack confuse ho kar EOF de
-        deta tha (log mein baar-baar dikhne wala "peer ne connection band
-        kar diya (EOF)" isi ki wajah se tha). Random stagger sirf is
-        device-instance ki PEHLI resync-cycle mein hona chahiye tha (HA
-        startup jitter), uske baad har cycle poore, fixed RESYNC_INTERVAL
-        ka hona chahiye - `self._resync_staggered` (instance-level, sab
-        reconnects ke across persist karta hai) ab yahi guarantee karta
-        hai."""
+        BUG FIX (repeated-EOF-storm bug): previously this "random first
+        time" wait was drawn fresh EVERY time - because this function
+        itself restarts as a NEW task after every new connect()/
+        soft_reconnect() (see _do_connect), and the `random.uniform(...)`
+        call was inside it. So the first cycle was fine, but EVERY resync
+        AFTER it was random too - sometimes 25 s, but sometimes only 1-2
+        seconds. Whenever that short wait came up, a connection that had
+        just been established was deliberately closed and reopened only 1-2
+        seconds later - which confused the device's fragile Wi-Fi/TCP stack
+        into sending an EOF (the "the peer closed the connection (EOF)"
+        that kept appearing in the log was caused by this). The random
+        stagger should only happen in this device instance's FIRST resync
+        cycle (HA startup jitter); every cycle after that should be the
+        full, fixed RESYNC_INTERVAL - `self._resync_staggered`
+        (instance-level, persisting across all reconnects) now guarantees
+        exactly that."""
         if not RESYNC_INTERVAL:
-            # v1.5.4: resync band hai (const.py me wajah likhi hai) - device
-            # apna state khud live push karta hai, aur connection ab stable
-            # hai, isliye jaan-boojh kar connection todne ka koi fayda nahi,
-            # sirf downtime hai.
+            # v1.5.4: resync is disabled (the reason is documented in
+            # const.py) - the device pushes its own state live, and the
+            # connection is now stable, so deliberately breaking the
+            # connection has no benefit, only downtime.
             return
         if not self._resync_staggered:
             self._resync_staggered = True
             wait = random.uniform(0, RESYNC_INTERVAL)
         else:
-            # Har cycle par thoda jitter, taaki 10+ devices apne resync ek
-            # hi pal par sync karke stampede na bana lein.
+            # A little jitter on every cycle, so that 10+ devices do not
+            # synchronize their resyncs to the same moment and stampede.
             wait = RESYNC_INTERVAL * random.uniform(0.85, 1.15)
         while self._connected and not self._resyncing and gen == self._conn_generation:
             await asyncio.sleep(wait)
-            # STABILITY FIX (v1.5.0): ye generation-check hi wo missing
-            # guard hai jiski wajah se purane resync tasks (jo reconnect ke
-            # baad bhi zinda reh jaate the) baar-baar connection tod rahe
-            # the. Ab purani session ka task yahin chup-chaap khatam ho
-            # jaata hai.
+            # STABILITY FIX (v1.5.0): this generation check is the missing
+            # guard that caused old resync tasks (which stayed alive even
+            # after a reconnect) to break the connection over and over. The
+            # old session's task now simply ends quietly here.
             if not self._connected or self._resyncing or gen != self._conn_generation:
                 return
             _LOGGER.debug(
-                "Raylogic %s: periodic resync (App-reopen jaisa "
-                "soft-reconnect) taaki App se hue changes bhi sync ho jaayein.",
+                "Raylogic %s: periodic resync (a soft reconnect, like "
+                "reopening the App) so that changes made in the App are synced too.",
                 self.ip,
             )
             await self._soft_reconnect()
-            return  # naya connect() apna khud ka fresh resync-loop shuru kar dega
+            return  # the new connect() starts its own fresh resync loop
 
     async def _soft_reconnect(self):
-        """Purana socket band karke turant naya connect() - is baar
-        'available: False' event fire NAHI karte (bahut chhota gap hota
-        hai, HA UI mein flicker nahi dikhna chahiye jab tak reconnect
-        sach mein fail na ho jaaye)."""
+        """Close the old socket and call connect() again immediately - this
+        time WITHOUT firing an 'available: False' event (the gap is very
+        short; the HA UI should not flicker unless the reconnect really
+        fails)."""
         self._resyncing = True
         for task in (self._listen_task, self._ka_task):
             if task and task is not asyncio.current_task():
@@ -1128,17 +1113,17 @@ class RaylogicModDevice:
         await self._close_writer_safe()
         self._connected = False
         self._resyncing = False
-        # STABILITY FIX: purana socket band karke UPAR SE TURANT naya
-        # connect() try karne se kai device apna purana socket saaf karne
-        # se pehle hi nayi connection reject/EOF kar dete the. Ek chhota
-        # "saans lene ka" gap (per-device random, taaki sab devices sync
-        # na ho jaayein) deta hai device ko cleanup karne ka time.
+        # STABILITY FIX: when a new connect() was attempted IMMEDIATELY
+        # after closing the old socket, many devices rejected/EOF'd the new
+        # connection before they had cleaned up their old socket. A short
+        # "breathing" gap (random per device, so that devices do not get
+        # synchronized) gives the device time to clean up.
         await asyncio.sleep(random.uniform(SOFT_RECONNECT_SETTLE_MIN, SOFT_RECONNECT_SETTLE_MAX))
         ok = await self.connect()
         if not ok:
             _LOGGER.warning(
-                "Raylogic %s: periodic resync fail hua, normal reconnect "
-                "cycle sambhal lega.", self.ip,
+                "Raylogic %s: periodic resync failed, the normal reconnect "
+                "cycle will take over.", self.ip,
             )
             self._mark_unavailable_soon()
             self._schedule_reconnect()
@@ -1152,16 +1137,17 @@ class RaylogicModDevice:
 
     # ---------------- P1 (v1.6.7): confirmed-state tracking ---------------- #
     def _cmd_delivered(self, cmd: str) -> None:
-        """Module ne command receive kar liya - us channel ka pre-state
-        snapshot tabhi hatao jab us channel ka koi aur command abhi raaste me
-        na ho."""
+        """The module received the command - drop that channel's pre-state
+        snapshot, but only when no other command for that channel is still
+        in flight."""
         ch = self._cmd_channel.pop(cmd, None)
         if ch is not None and ch not in self._cmd_channel.values():
             self._pre_state.pop(ch, None)
 
     def _cmd_dropped(self, cmd: str, reason: str) -> None:
-        """Command kabhi deliver nahi hoga - "false success" hatao: channel ko
-        aakhri confirmed state par wapas le jao aur HA entity update karo."""
+        """The command will never be delivered - remove the "false success":
+        restore the channel to its last confirmed state and update the HA
+        entity."""
         ch = self._cmd_channel.pop(cmd, None)
         if ch is None or ch in self._cmd_channel.values():
             return
@@ -1170,44 +1156,45 @@ class RaylogicModDevice:
             return
         self.channel_states[ch] = dict(prev)
         _LOGGER.warning(
-            "Raylogic %s %s: channel %d ka command device tak nahi pahuncha "
-            "(%s) - HA me state wapas asli (aakhri confirmed) par kar di, "
-            "'false success' nahi dikhega.", self._model_name, self.ip, ch, reason,
+            "Raylogic %s %s: the command for channel %d did not reach the "
+            "device (%s) - the state in HA has been restored to the real "
+            "(last confirmed) state, so no 'false success' is shown.",
+            self._model_name, self.ip, ch, reason,
         )
         if self.state_callback:
             self.state_callback(self.ip, ch, self.channel_states[ch])
 
     def _expire_pending(self) -> None:
-        """Queue me PENDING_COMMAND_MAX_AGE se purane commands drop + revert.
-        Module offline rehte hue bhi chalta hai (reconnect loop se), taaki HA
-        ~30s me hi sach dikhaye, module wapas aane ka intezaar na kare."""
+        """Drop + revert queued commands older than PENDING_COMMAND_MAX_AGE.
+        This also runs while the module is offline (from the reconnect
+        loop), so HA shows the truth within ~30 s instead of waiting for the
+        module to come back."""
         now = self._now()
         keep = []
         for p in self._pending_commands:
             if (now - p["at"]) > PENDING_COMMAND_MAX_AGE:
-                self._cmd_dropped(p["cmd"], f"module {PENDING_COMMAND_MAX_AGE}s tak offline raha")
+                self._cmd_dropped(p["cmd"], f"module was offline for {PENDING_COMMAND_MAX_AGE}s")
             else:
                 keep.append(p)
         self._pending_commands = keep
 
     def _queue_command(self, cmd: str, attempt: int = 0) -> None:
-        """Command ko replay-queue me daalo (bounded + timestamped).
+        """Put a command into the replay queue (bounded + timestamped).
 
-        BUG FIX (v1.5.4, stress-test se pakda gaya): queue me command
-        daalna tabhi kaam ka hai jab koi na koi use FLUSH bhi kare -
-        flush sirf ek safal connect() ke andar hota hai. Pehle kuch raste
-        (jaise `_send_raw` ka "connection down hai" wala branch) sirf
-        `_trigger_on_demand_connect()` call karte the, jo ek hi best-effort
-        koshish karta hai aur fail hone par chup ho jaata hai. Agar us
-        waqt background `_reconnect()` loop bhi nahi chal raha ho (jaise
-        wo abhi-abhi ek safal connect ke baad exit kar chuka ho), to
-        command queue me pada-pada hamesha ke liye reh jaata tha - user
-        ka click bekaar, koi error bhi nahi. Mild chaos wale stress test
-        me 500 me se 5 command isi tarah gum hue.
+        BUG FIX (v1.5.4, caught by the stress test): putting a command into
+        the queue is only useful if something also FLUSHES it - and the
+        flush only happens inside a successful connect(). Previously some
+        paths (such as the "connection is down" branch of `_send_raw`) only
+        called `_trigger_on_demand_connect()`, which makes a single
+        best-effort attempt and goes quiet if it fails. If the background
+        `_reconnect()` loop was not running at that moment either (e.g. it
+        had just exited after a successful connect), the command sat in the
+        queue forever - the user's click was wasted, with no error. In the
+        mild-chaos stress test, 5 out of 500 commands were lost this way.
 
-        Ab har queue-add ke saath ye guarantee bhi jaati hai ki reconnect
-        loop chal raha hai. `_schedule_reconnect()` idempotent hai (agar
-        pehle se chal raha ho to turant return kar deta hai)."""
+        Every queue add now also guarantees that the reconnect loop is
+        running. `_schedule_reconnect()` is idempotent (it returns
+        immediately if one is already running)."""
         self._pending_commands.append(
             {"cmd": cmd, "at": self._now(), "attempt": attempt}
         )
@@ -1218,34 +1205,34 @@ class RaylogicModDevice:
             self._schedule_reconnect()
 
     async def _resend_unconfirmed(self, cmd: str, attempt: int) -> None:
-        """Command ka device tak pahunchna CONFIRM nahi hua - dobara bhejo.
+        """Delivery of the command to the device was NOT confirmed - send
+        it again.
 
-        BUG FIX (v1.5.4, stress-test se pakda gaya): pehle agar verify ke
-        beech me hi reconnect ho jaata (generation badal jaati), to
-        _verify_delivery chup-chaap return kar deta tha - ye maan kar ki
-        "reconnect wala rasta sambhal lega". Lekin us purane socket par
-        likha hua command kahin queue me tha hi nahi, to wo HAMESHA KE
-        LIYE gum ho jaata tha. Stress test me 500 me se 89 command isi
-        tarah gayab hue (queue khaali, delivery 411 par ruki hui).
+        BUG FIX (v1.5.4, caught by the stress test): previously, if a
+        reconnect happened in the middle of verification (the generation
+        changed), _verify_delivery returned silently - assuming "the
+        reconnect path will take care of it". But the command written on
+        that old socket was not in any queue, so it was lost FOREVER. In
+        the stress test, 89 out of 500 commands disappeared this way (queue
+        empty, delivery stuck at 411).
 
-        Ab aisa command naye connection par dobara bheja jaata hai. Sab
-        commands idempotent hain (absolute level, toggle nahi), isliye
-        dobara bhejna safe hai. COMMAND_MAX_ATTEMPTS ka cap infinite
-        retry se bachata hai."""
+        Such a command is now sent again on the new connection. All
+        commands are idempotent (absolute levels, not toggles), so resending
+        is safe. The COMMAND_MAX_ATTEMPTS cap prevents infinite retries."""
         if self._shutdown:
             return
         if attempt + 1 >= COMMAND_MAX_ATTEMPTS:
-            self._cmd_dropped(cmd, f"{COMMAND_MAX_ATTEMPTS} koshish fail")
+            self._cmd_dropped(cmd, f"{COMMAND_MAX_ATTEMPTS} attempts failed")
             _LOGGER.error(
-                "Raylogic %s %s: command %d koshish ke baad bhi device tak "
-                "nahi pahunch paya - chhod rahe hain: '%s'",
+                "Raylogic %s %s: the command could not reach the device even "
+                "after %d attempts - giving up: '%s'",
                 self._model_name, self.ip, COMMAND_MAX_ATTEMPTS, cmd,
             )
             return
         _LOGGER.info(
-            "Raylogic %s: command ka pahunchna confirm nahi hua (connection "
-            "badal gayi) - naye connection par dobara bhej rahe hain "
-            "(koshish %d/%d): '%s'",
+            "Raylogic %s: delivery of the command was not confirmed (the "
+            "connection changed) - resending it on the new connection "
+            "(attempt %d/%d): '%s'",
             self.ip, attempt + 2, COMMAND_MAX_ATTEMPTS, cmd,
         )
         await self._send_raw(
@@ -1254,9 +1241,9 @@ class RaylogicModDevice:
 
     @staticmethod
     def _unacked_bytes(sock) -> Optional[int]:
-        """Socket ke send-queue me kitne bytes abhi tak device ke TCP
-        stack se ACK nahi hue. 0 = sab kuch device tak pahunch gaya.
-        None = is platform par ye check available nahi (Linux-only)."""
+        """How many bytes in the socket's send queue have not yet been
+        ACKed by the device's TCP stack. 0 = everything reached the device.
+        None = this check is not available on this platform (Linux only)."""
         if fcntl is None or sock is None:
             return None
         try:
@@ -1268,19 +1255,19 @@ class RaylogicModDevice:
     async def _verify_delivery(
         self, cmd: str, gen: int, sock, attempt: int = 0,
     ) -> None:
-        """Background me confirm karo ki command sach me device tak
-        pahuncha. Device khud koi ACK nahi bhejta, lekin uska TCP stack
-        bhejta hai - SIOCOUTQ 0 hone ka matlab hai data receive ho gaya.
+        """Confirm in the background that the command really reached the
+        device. The device itself sends no ACK, but its TCP stack does -
+        SIOCOUTQ reaching 0 means the data was received.
 
-        Ye entity click ko block nahi karti (alag task me chalti hai),
-        isliye UI ka response waisa hi turant rehta hai."""
+        This does not block the entity click (it runs in a separate task),
+        so the UI response stays just as immediate."""
         try:
             await self._verify_delivery_inner(cmd, gen, sock, attempt)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # safety net - background task kabhi
-            _LOGGER.debug(      # unhandled exception na de
-                "Raylogic %s: delivery verification me error (ignore): %s",
+        except Exception as exc:  # safety net - the background task must
+            _LOGGER.debug(      # never raise an unhandled exception
+                "Raylogic %s: error during delivery verification (ignored): %s",
                 self.ip, exc,
             )
 
@@ -1291,26 +1278,26 @@ class RaylogicModDevice:
         last_pending = None
         while self._now() < deadline:
             if gen != self._conn_generation:
-                # Reconnect ho chuka aur is command ka pahunchna CONFIRM
-                # nahi hua - purane socket par likha hua data gum ho gaya
-                # hoga. Naye connection par dobara bhejo.
+                # A reconnect has happened and delivery of this command was
+                # NOT confirmed - the data written on the old socket was
+                # probably lost. Send it again on the new connection.
                 await self._resend_unconfirmed(cmd, attempt)
                 return
             pending = self._unacked_bytes(sock)
             if pending is None:
                 self._cmd_delivered(cmd)
-                return  # platform support nahi, verification skip
+                return  # not supported on this platform, skip verification
             if pending == 0:
                 self._cmd_delivered(cmd)
                 _LOGGER.debug(
-                    "Raylogic %s: command device tak pahuncha (TCP ACK): %s",
+                    "Raylogic %s: command reached the device (TCP ACK): %s",
                     self.ip, cmd,
                 )
                 return
-            # FALSE-POSITIVE GUARD: agar queue ghat rahi hai to data JA
-            # raha hai - bas link thoda slow/busy hai (100+ device wale
-            # setup me ho sakta hai). Aise me deadline thoda aage badha
-            # do; sirf tab "dead" maano jab bilkul koi progress hi na ho.
+            # FALSE-POSITIVE GUARD: if the queue is shrinking, data IS being
+            # sent - the link is just a little slow/busy (possible in a
+            # 100+ device setup). In that case push the deadline out a bit;
+            # only consider it "dead" when there is no progress at all.
             if last_pending is not None and pending < last_pending:
                 deadline = self._now() + DELIVERY_VERIFY_TIMEOUT
             last_pending = pending
@@ -1321,14 +1308,15 @@ class RaylogicModDevice:
         if gen != self._conn_generation:
             await self._resend_unconfirmed(cmd, attempt)
             return
-        # Timeout - device ne TCP level par bhi data ACK nahi kiya, matlab
-        # socket sach me dead hai. Ye wahi case hai jisme pehle command
-        # chup-chaap kho jaata tha aur user ko dobara click karna padta tha.
+        # Timeout - the device did not ACK the data even at the TCP level,
+        # i.e. the socket really is dead. This is exactly the case in which
+        # the command used to be lost silently and the user had to click
+        # again.
         _LOGGER.warning(
-            "Raylogic %s %s: command %.1fs me device tak nahi pahuncha "
-            "(TCP ACK nahi mila) - socket dead maan kar reconnect kar rahe "
-            "hain aur command KHUD DOBARA bhejenge, aapko phir se click "
-            "karne ki zaroorat nahi: '%s'",
+            "Raylogic %s %s: the command did not reach the device within "
+            "%.1fs (no TCP ACK) - treating the socket as dead, reconnecting "
+            "and RESENDING the command AUTOMATICALLY; there is no need to "
+            "click again: '%s'",
             self._model_name, self.ip, DELIVERY_VERIFY_TIMEOUT, cmd,
         )
         self._connected = False
@@ -1341,13 +1329,13 @@ class RaylogicModDevice:
         self, cmd: str, queue_on_disconnect: bool = False,
         verify: bool = False, attempt: int = 0,
     ):
-        # PRE-FLIGHT CHECK (v1.5.2): device normally har 6-12s me apna
-        # frame bhejta hai. Agar LINK_SUSPECT_SECONDS se ekdum khamoshi
-        # hai to socket bahut sambhavna se dead hai - us par likh kar
-        # command gawane se behtar hai ki use queue karke pehle connection
-        # refresh kar lein. (listen-loop apna RX_SILENCE_TIMEOUT check
-        # bhi karta hai, lekin wo thoda der se trigger hota hai - user ka
-        # click uska intezaar na kare.)
+        # PRE-FLIGHT CHECK (v1.5.2): the device normally sends its own frame
+        # every 6-12 s. If there has been complete silence for longer than
+        # LINK_SUSPECT_SECONDS, the socket is very likely dead - rather than
+        # losing the command by writing to it, queue it and refresh the
+        # connection first. (The listen loop also does its own
+        # RX_SILENCE_TIMEOUT check, but that triggers a bit later - the
+        # user's click should not wait for it.)
         if (
             verify
             and self._connected
@@ -1355,9 +1343,10 @@ class RaylogicModDevice:
             and (self._now() - self._last_rx) > LINK_SUSPECT_SECONDS
         ):
             _LOGGER.warning(
-                "Raylogic %s %s: %.0fs se device chup hai - command bhejne "
-                "se pehle connection refresh kar rahe hain (command queue "
-                "me safe hai, reconnect hote hi chala jaayega).",
+                "Raylogic %s %s: the device has been silent for %.0fs - "
+                "refreshing the connection before sending the command (the "
+                "command is safe in the queue and will be sent as soon as "
+                "the connection is re-established).",
                 self._model_name, self.ip, self._now() - self._last_rx,
             )
             self._connected = False
@@ -1365,32 +1354,33 @@ class RaylogicModDevice:
 
         if not self._connected or not self._writer:
             if queue_on_disconnect:
-                # Bounded queue (max N) taaki agar user bahut jaldi-jaldi
-                # toggle kare to memory mein bekaar buildup na ho.
+                # Bounded queue (max N) so that memory does not build up
+                # needlessly if the user toggles very quickly.
                 self._queue_command(cmd, attempt)
                 _LOGGER.info(
-                    "Raylogic %s: command abhi bheji nahi ja saki (connection "
-                    "down) - queue mein rakh di, reconnect hote hi khud-ba-khud "
-                    "bhej di jaayegi: '%s'", self.ip, cmd,
+                    "Raylogic %s: the command could not be sent right now "
+                    "(connection down) - it has been queued and will be sent "
+                    "automatically once reconnected: '%s'", self.ip, cmd,
                 )
-                # ON-DEMAND FIX: sirf queue karke background backoff-cycle
-                # ka wait mat karo - yeh ek REAL control command hai (user ne
-                # toggle kiya ya scene trigger hui), isliye turant ek connect()
-                # attempt bhi fire karo taaki command jaldi se jaldi apply ho.
+                # ON-DEMAND FIX: do not just queue and wait for the
+                # background backoff cycle - this is a REAL control command
+                # (the user toggled something or a scene was triggered), so
+                # also fire a connect() attempt immediately so the command is
+                # applied as soon as possible.
                 self._trigger_on_demand_connect()
             else:
                 _LOGGER.warning(
-                    "Raylogic %s: command DROP hui kyunki connection abhi "
-                    "active nahi hai (connected=%s) - '%s' bheja nahi ja saka. "
-                    "Device se connection wapas ban raha hoga (reconnect "
-                    "cycle) - thodi der baad dobara try karo.",
+                    "Raylogic %s: command DROPPED because the connection is "
+                    "not active right now (connected=%s) - '%s' could not be "
+                    "sent. The connection to the device is probably being "
+                    "re-established (reconnect cycle) - try again shortly.",
                     self.ip, self._connected, cmd,
                 )
             return
         try:
-            # Write + drain ab _send_lock ke andar hai, taaki koi
-            # _close_writer_safe() beech me socket band karke humara
-            # abhi-abhi likha hua command truncate na kar de.
+            # Write + drain now happen inside _send_lock, so that
+            # _close_writer_safe() cannot close the socket in between and
+            # truncate the command we have just written.
             async with self._send_lock:
                 if not self._connected or not self._writer:
                     self._queue_command(cmd, attempt)
@@ -1404,11 +1394,11 @@ class RaylogicModDevice:
                 self._last_tx = self._now()
             _LOGGER.debug("TX %s: %s", self.ip, cmd)
             if verify:
-                # Background me delivery confirm karo - UI ko rokte nahi.
-                # Task ka reference rakhna zaroori hai: bina strong-ref ke
-                # asyncio task ko garbage-collect kar sakta hai (Python ka
-                # jaana-mana fire-and-forget pitfall) - tab verification
-                # chup-chaap gayab ho jaati.
+                # Confirm delivery in the background - without blocking the
+                # UI. Keeping a reference to the task is essential: without
+                # a strong reference asyncio may garbage-collect the task
+                # (Python's well-known fire-and-forget pitfall) - and the
+                # verification would silently disappear.
                 task = asyncio.create_task(
                     self._verify_delivery(cmd, gen, sock, attempt)
                 )
@@ -1422,8 +1412,8 @@ class RaylogicModDevice:
             )
             self._connected = False
             if verify:
-                # v1.5.2: pehle yahan command bas gum ho jaata tha. Ab
-                # queue me daal kar reconnect ke baad khud replay hota hai.
+                # v1.5.2: previously the command was simply lost here. It is
+                # now queued and replayed automatically after reconnecting.
                 self._queue_command(cmd, attempt)
                 self._trigger_on_demand_connect()
             self._schedule_reconnect()
@@ -1441,59 +1431,60 @@ class RaylogicModDevice:
         prefix before *AR=/+AR40= - the official PDF's bare "*AR=...\\r"
         examples are only the logical payload, not the real wire format.
 
-        Pehle do galtiyan hui thi:
-          1. Prefix bilkul hata diya tha (PDF examples dekh kar) - galat,
-             real traffic mein prefix hota hai.
-          2. Device ke apne broadcast id (jo *KA=/+AR40= lines mein "109"
-             jaisa dikhta hai) ko apna sender-id samajh liya tha - galat,
-             wo device/hub ki APNI identity hai, hamari nahi. Real working
-             client commands (jaise "099,155,*AR=001A040203") ek ALAG id
-             use karte hain - wahi CLIENT_SENDER_ID hai.
+        Two mistakes were made earlier:
+          1. The prefix was removed entirely (based on the PDF examples) -
+             wrong, real traffic does carry the prefix.
+          2. The device's own broadcast id (which appears as e.g. "109" in
+             *KA=/+AR40= lines) was taken to be our sender id - wrong, that
+             is the device/hub's OWN identity, not ours. Real working client
+             commands (such as "099,155,*AR=001A040203") use a DIFFERENT id
+             - that is CLIENT_SENDER_ID.
         """
         full = f"{CLIENT_SENDER_ID},{self._next_msg()},{cmd}"
         if ch is not None:
-            # P1: command se PEHLE ki state = aakhri confirmed (agar pehle se
-            # koi undelivered command na ho; warna wahi purana snapshot rahe)
+            # P1: the state BEFORE the command = the last confirmed state
+            # (unless an undelivered command already exists; in that case
+            # the older snapshot is kept)
             if ch not in self._pre_state:
                 self._pre_state[ch] = dict(self.channel_states.get(ch, {}))
             self._cmd_channel[full] = ch
         await self._send_raw(
             full,
             queue_on_disconnect=True,
-            # v1.5.2: ye ek REAL user command hai (entity click / scene) -
-            # iski delivery TCP-ACK se confirm karo, aur na pahunchne par
-            # khud dobara bhejo. Keepalive is flag ke bina jaata hai.
+            # v1.5.2: this is a REAL user command (entity click / scene) -
+            # confirm its delivery via TCP ACK and resend it automatically
+            # if it does not arrive. The keepalive is sent without this flag.
             verify=True,
         )
 
     async def _read_line(self, timeout: float = 2.0) -> Optional[str]:
         try:
             line = await asyncio.wait_for(self._read_frame(), timeout=timeout)
-            # Device se kuch bhi mila = connection pakka zinda hai. Passive
-            # keepalive aur passive dead-detection dono isi timestamp par
-            # chalte hain (dekho _keepalive_loop / _listen_loop).
+            # Anything received from the device = the connection is
+            # definitely alive. Both the passive keepalive and the passive
+            # dead-connection detection rely on this timestamp (see
+            # _keepalive_loop / _listen_loop).
             self._last_rx = self._now()
             return line
         except asyncio.TimeoutError:
             return None
         except asyncio.IncompleteReadError as exc:
-            # ROOT CAUSE (webpage/HA UI hang jab dusra device add karo ya
-            # koi bhi device apni taraf se TCP band kare): pehle isko
-            # timeout jaisa hi "harmless" treat kiya jaata tha (bas None
-            # return, self._connected ko chhua tak nahi jaata tha).
-            # readuntil() EOF ke baad HAMESHA turant (zero delay, bina
-            # kisi wait ke) IncompleteReadError deta hai - isliye
-            # _listen_loop ka `while self._connected:` loop is None ko
-            # dekh kar seedha agli read try karta, jo phir turant EOF
-            # deti, aur yeh ek zero-delay tight loop ban jaata jo poore
-            # HA event loop ko CPU-spin karke block kar deta (sirf is
-            # device ka nahi - HA ka poora webpage/UI atak jaata, jab
-            # tak restart na karo). Ab EOF ko real disconnect maante hain
-            # (ConnectionError raise) taaki caller turant disconnected
-            # state mein jaaye aur normal 30s reconnect-cycle trigger ho -
-            # koi tight loop ab possible nahi.
+            # ROOT CAUSE (the webpage/HA UI hung when a second device was
+            # added or when any device closed TCP from its side): this used
+            # to be treated as "harmless", just like a timeout (it simply
+            # returned None and never touched self._connected). After EOF,
+            # readuntil() ALWAYS raises IncompleteReadError immediately
+            # (zero delay, without any wait) - so _listen_loop's
+            # `while self._connected:` loop saw the None and tried the next
+            # read straight away, which hit EOF immediately again, creating
+            # a zero-delay tight loop that CPU-spun and blocked the whole
+            # HA event loop (not just this device - the entire HA webpage/UI
+            # hung until a restart). EOF is now treated as a real disconnect
+            # (ConnectionError is raised) so the caller immediately moves
+            # to the disconnected state and the normal 30 s reconnect cycle
+            # is triggered - a tight loop is no longer possible.
             raise ConnectionError(
-                f"Raylogic {self.ip}: peer ne connection band kar diya (EOF)"
+                f"Raylogic {self.ip}: the peer closed the connection (EOF)"
             ) from exc
         except Exception as exc:
             _LOGGER.error("Read error from Raylogic %s: %s", self.ip, exc)
@@ -1502,13 +1493,14 @@ class RaylogicModDevice:
             return None
 
     async def _read_frame(self) -> str:
-        """P2 (v1.6.4): agli non-empty line - "\r", "\n" ya "\r\n", teeno
-        chalte hain. Pehle sirf readuntil(b"\r") tha: "\n"-only firmware
-        ka ek bhi frame parse nahi hota tha (simulator me confirm - har
-        ~80s reconnect, device bekaar). Buffer instance par rehta hai, isliye
-        _read_line ka timeout beech me cancel kare to bhi data nahi khota.
-        EOF -> IncompleteReadError (purana EOF handling waisa hi), bina
-        terminator ke 64 KiB -> ValueError (purana "Read error" -> reconnect)."""
+        """P2 (v1.6.4): the next non-empty line - "\r", "\n" and "\r\n" all
+        work. Previously there was only readuntil(b"\r"): not a single frame
+        from "\n"-only firmware was parsed (confirmed in the simulator - a
+        reconnect every ~80 s, the device useless). The buffer lives on the
+        instance, so no data is lost even if _read_line's timeout cancels in
+        the middle. EOF -> IncompleteReadError (same EOF handling as
+        before), 64 KiB without a terminator -> ValueError (the old "Read
+        error" -> reconnect)."""
         while True:
             m = _LINE_END_RE.search(self._rx_buf)
             if m:
@@ -1519,7 +1511,7 @@ class RaylogicModDevice:
                 text = raw.decode(errors="replace").strip()
                 if text:
                     return text
-                continue    # "\r\n" ke beech ki khaali line
+                continue    # the empty line between "\r\n"
             if len(self._rx_buf) > _RX_LINE_LIMIT:
                 self._rx_buf = b""
                 raise ValueError("Line longer than limit without terminator")
@@ -1529,29 +1521,29 @@ class RaylogicModDevice:
             self._rx_buf += chunk
 
     def _log_once(self, key, level: int, msg: str, *args) -> None:
-        """P3/P4/P5: same cheez har frame par log na ho - ek baar."""
+        """P3/P4/P5: do not log the same thing for every frame - only once."""
         if key in self._logged_once:
             return
         self._logged_once.add(key)
         _LOGGER.log(level, msg, *args)
 
     async def _drain_initial_push(self):
-        """Naye connection banate hi device jo bhi initial burst bhejta hai
-        (App connect karte waqt bhi yahi hota hoga, isiliye reopen karne par
-        App ko sahi status milta hai) - pehle hum sirf PEHLI line padh kar
-        baaki discard kar dete the. Ab thodi der (2.5s) tak jitni bhi lines
-        aayein, sabko _dispatch_line se process karte hain - agar isme
-        per-channel *AR= state bhi ho, wo ab channel_states mein reflect
-        hogi (state_callback bhi fire hoga, taaki HA entities turant update
-        ho jayein)."""
-        # SCALE FIX (v1.5.2): pehle har read ka timeout poora bacha hua
-        # window (2.5s tak) hota tha - matlab burst khatam hone ke baad
-        # bhi har device apne connect par lagbhag 2.5 second baithta tha.
-        # 100+ device wale setup me (jahan connects semaphore se batch me
-        # hote hain) ye seedha HA startup me minute-scale ka delay ban
-        # jaata hai. Ab burst khatam hone ka pata ek CHHOTE quiet-gap se
-        # chalta hai (INITIAL_QUIET), overall cap wahi 2.5s hai - milne
-        # wala data bilkul same rehta hai, bas bekaar ka intezaar nahi.
+        """Whatever initial burst the device sends as soon as a new
+        connection is established (the same probably happens when the App
+        connects, which is why the App gets the correct status on reopen) -
+        previously we only read the FIRST line and discarded the rest. Now
+        every line that arrives within a short time (2.5 s) is processed by
+        _dispatch_line - if it contains per-channel *AR= state, that is now
+        reflected in channel_states (state_callback fires as well, so HA
+        entities update immediately)."""
+        # SCALE FIX (v1.5.2): previously each read's timeout was the whole
+        # remaining window (up to 2.5 s) - which meant every device sat for
+        # about 2.5 seconds on connect even after its burst had ended. In a
+        # 100+ device setup (where connects run in batches via the
+        # semaphore) this directly turned into a minute-scale delay at HA
+        # startup. The end of the burst is now detected by a SHORT quiet
+        # gap (INITIAL_QUIET), and the overall cap is still 2.5 s - the data
+        # received stays exactly the same, just without the needless wait.
         end_time = asyncio.get_event_loop().time() + INITIAL_DRAIN_MAX
         first = True
         while asyncio.get_event_loop().time() < end_time:
@@ -1568,10 +1560,10 @@ class RaylogicModDevice:
             first = False
 
     def _handle_ka_line(self, line: str):
-        """*KA= line device/hub KHUD apni identity broadcast karne ke liye
-        bhejta hai (e.g. "109,*KA=31-...") - ye HAMARA sender-id NAHI hai,
-        sirf reference/logging ke liye store karte hain. Outgoing commands
-        CLIENT_SENDER_ID (confirmed "099") use karte hain."""
+        """The device/hub sends the *KA= line ITSELF to broadcast its own
+        identity (e.g. "109,*KA=31-...") - this is NOT our sender id; it is
+        only stored for reference/logging. Outgoing commands use
+        CLIENT_SENDER_ID (confirmed "099")."""
         try:
             candidate = line.split(",")[0].strip()
             if candidate.isdigit():
@@ -1579,17 +1571,18 @@ class RaylogicModDevice:
         except Exception:
             pass
         self._parse_ka_identity(line)
-        # v1.5.3: device ke keepalive ka TURANT jawab do - warna wo 2 KA
-        # baad (~12s) connection kaat deta hai. Fire-and-forget, kyunki
-        # _handle_ka_line sync context se call hota hai.
+        # v1.5.3: reply to the device's keepalive IMMEDIATELY - otherwise it
+        # drops the connection after 2 KAs (~12 s). Fire-and-forget, because
+        # _handle_ka_line is called from a sync context.
         if self._connected and not self._shutdown:
             task = asyncio.create_task(self._answer_device_keepalive())
             self._verify_tasks.add(task)
             task.add_done_callback(self._verify_tasks.discard)
 
     def _parse_ka_identity(self, line: str) -> None:
-        """*KA= payload mein device apna AREA aur apni CHANNEL RANGE khud
-        batata hai. Decode (10 real devices ke logs par verify kiya gaya):
+        """In the *KA= payload the device reports its own AREA and its own
+        CHANNEL RANGE. Decoding (verified against the logs of 10 real
+        devices):
 
             *KA=<xx>-<ctr:3><n:1><AREA:2h><01><0><START:2h><END:2h>0000
 
@@ -1598,12 +1591,11 @@ class RaylogicModDevice:
             *KA=11-04710C0100D100000 -> area 0x0C=12, ch 0x0D-0x10 (13-16)
             *KA=11-04820801017180000 -> area 0x08= 8, ch 0x17-0x18 (23-24)
 
-        Ise hum config CHANGE karne ke liye use NAHI karte (jo devices
-        abhi theek chal rahe hain unhe chhedna nahi hai) - sirf VERIFY
-        karke ek saaf warning dete hain. Naya device add karte waqt agar
-        Area ya First Channel Number galat daal diya, to ab log mein
-        turant, exact sahi value ke saath dikh jaata hai - guess nahi
-        karna padta."""
+        We do NOT use this to CHANGE the config (devices that are already
+        working correctly must not be touched) - we only VERIFY it and emit
+        a clear warning. If a wrong Area or First Channel Number was entered
+        when adding a new device, the log now shows it immediately, with the
+        exact correct value - no guessing needed."""
         try:
             idx = line.find("*KA=")
             if idx == -1:
@@ -1632,69 +1624,69 @@ class RaylogicModDevice:
         if self._config_mismatch_logged:
             return
         if not self._legacy_area or self._legacy_area <= 0:
-            return  # LEARN mode - yahan verify karne ko kuch nahi
+            return  # LEARN mode - nothing to verify here
 
         problems = []
         if area != self._legacy_area:
             problems.append(
-                f"Area: config mein {self._legacy_area} hai, device khud "
-                f"{area} bata raha hai"
+                f"Area: the config says {self._legacy_area}, the device "
+                f"reports {area}"
             )
         if start != self._channel_start:
             problems.append(
-                f"First Channel Number: config mein {self._channel_start} "
-                f"hai, device khud {start} bata raha hai"
+                f"First Channel Number: the config says {self._channel_start}, "
+                f"the device reports {start}"
             )
         detected_count = end - start + 1
         if detected_count != self._legacy_channel_count:
             problems.append(
-                f"Channel count: config (model {self._model_name}) "
-                f"{self._legacy_channel_count} channel maanta hai, device "
-                f"{detected_count} ({start}-{end}) bata raha hai - shayad "
-                f"Device Model galat chuna gaya hai"
+                f"Channel count: the config (model {self._model_name}) "
+                f"assumes {self._legacy_channel_count} channels, the device "
+                f"reports {detected_count} ({start}-{end}) - the wrong "
+                f"Device Model may have been selected"
             )
         if problems:
             self._config_mismatch_logged = True
             _LOGGER.warning(
-                "Raylogic %s %s: CONFIG MISMATCH - device apne baare mein "
-                "kuch aur bata raha hai. %s. HA -> Settings -> Devices -> "
-                "is device par 'Configure' kholkar sahi value daal do, "
-                "warna commands galat address par jaayenge aur device "
-                "unhe chup-chaap ignore kar dega.",
+                "Raylogic %s %s: CONFIG MISMATCH - the device reports "
+                "something different about itself. %s. Open HA -> Settings "
+                "-> Devices -> 'Configure' on this device and enter the "
+                "correct values, otherwise commands will go to the wrong "
+                "address and the device will silently ignore them.",
                 self._model_name, self.ip, "; ".join(problems),
             )
         else:
             _LOGGER.debug(
-                "Raylogic %s: config device ke self-report se match karta "
-                "hai (area=%d, channels %d-%d).",
+                "Raylogic %s: config matches the device's self-report "
+                "(area=%d, channels %d-%d).",
                 self.ip, area, start, end,
             )
 
     def _setup_legacy_channels(self):
-        """Agar user ne config_flow mein manually Area diya hai (0 ka matlab
-        'auto/learn', sirf Relay ke liye), turant channels bana do - har
-        channel ka type wahi jo config mein select kiya gaya hai (relay/
-        dimmer/fan/curtain). Warna (LEARN mode) kuch bhi nahi banata jab tak
-        real *AR= frame na aa jaye (app/switch se ek baar toggle karna hoga)
-        - LEARN sirf Relay channels ke liye kaam karta hai.
+        """If the user entered an Area manually in config_flow (0 means
+        'auto/learn', Relay only), create the channels right away - each
+        channel with the type selected in the config (relay/dimmer/fan/
+        curtain). Otherwise (LEARN mode) nothing is created until a real
+        *AR= frame arrives (the channel has to be toggled once from the
+        app/switch) - LEARN only works for Relay channels.
 
-        NOTE: ye function periodic resync (_soft_reconnect) ke baad bhi
-        chalta hai - isliye agar channel PEHLE se maujood hai (purani
-        session se), uski on/brightness/percentage state ko as-is rehne do,
-        sirf area/type refresh karo. Warna har resync par HA mein light/
-        switch galti se OFF flicker karti (jabki device asal mein badla
-        nahi tha - naya connect() ke baad turant _drain_initial_push jo
-        fresh *AR= bheje wahi asli update dega)."""
+        NOTE: this function also runs after a periodic resync
+        (_soft_reconnect) - so if a channel ALREADY exists (from the
+        previous session), its on/brightness/percentage state is kept
+        as-is and only area/type are refreshed. Otherwise every resync
+        would make the light/switch wrongly flicker OFF in HA (even though
+        the device had not actually changed - the fresh *AR= sent by
+        _drain_initial_push right after the new connect() provides the
+        real update)."""
         if self._legacy_area and self._legacy_area > 0:
             area = max(AREA_MIN, min(AREA_MAX, self._legacy_area))
             start = self._channel_start
             for ch_num in range(start, start + self._legacy_channel_count):
-                # NOTE: CTC aur Curtain dono PAIRED modes hain - jab pair
-                # ka koi ek channel in mein se ek banta hai, doosre
-                # physical channel ke liye is dict mein jaan-boojh kar
-                # koi key nahi hoti (__init__.py ka _resolve_channel_types
-                # dekho), taaki uske liye alag/duplicate entity na ban
-                # jaaye.
+                # NOTE: CTC and Curtain are both PAIRED modes - when one
+                # channel of a pair becomes one of these, the other
+                # physical channel deliberately has no key in this dict
+                # (see _resolve_channel_types in __init__.py), so that no
+                # separate/duplicate entity is created for it.
                 if ch_num not in self._channel_types:
                     continue
                 ch_type = self._channel_types.get(ch_num, CH_TYPE_RELAY)
@@ -1716,9 +1708,9 @@ class RaylogicModDevice:
                 {k: v.get("type") for k, v in self.channel_states.items()},
             )
         else:
-            # LEARN mode: pichhle session mein seekhe hue Relay channels
-            # turant restore kar do (disk se), naye channels *AR= frame se
-            # aayenge. Sirf relay type yahan chalta hai.
+            # LEARN mode: restore the Relay channels learned in the previous
+            # session immediately (from disk); new channels will come from
+            # *AR= frames. Only the relay type works here.
             for ch_num, area in self._learned.items():
                 existing = self.channel_states.get(ch_num, {})
                 self.channel_states[ch_num] = {
@@ -1729,9 +1721,9 @@ class RaylogicModDevice:
                 }
             _LOGGER.info(
                 "Raylogic %s: LEARN mode - %d channel(s) restored from "
-                "previous session. Naye channel ke liye Raylogic GO app ya "
-                "physical switch se ek baar us channel ko ON/OFF karo - HA "
-                "khud detect karke entity bana dega.",
+                "previous session. For a new channel, switch that channel "
+                "ON/OFF once from the Raylogic GO app or a physical switch - "
+                "HA will detect it and create the entity automatically.",
                 self.ip, len(self._learned),
             )
 
@@ -1739,9 +1731,9 @@ class RaylogicModDevice:
     # Learned-channel persistence
     # ------------------------------------------------------------------ #
     def _load_learned(self) -> dict[int, int]:
-        # P6: nayi jagah par file nahi, lekin purani (integration folder)
-        # me hai -> ek baar copy kar do. Purani file chhod dete hain (HACS
-        # update use waise bhi hata dega), delete nahi karte.
+        # P6: if the file is not in the new location but exists in the old
+        # one (integration folder) -> copy it over once. The old file is
+        # left in place (a HACS update removes it anyway), not deleted.
         source = self._state_file
         if not source.exists() and self._legacy_state_file.exists():
             source = self._legacy_state_file
@@ -1752,8 +1744,9 @@ class RaylogicModDevice:
             return {}
         if source is not self._state_file:
             _LOGGER.info(
-                "Raylogic %s: learned channels purani jagah se %s par move "
-                "kiye (HACS update se ab nahi mitenge).", self.ip, self._state_file,
+                "Raylogic %s: moved learned channels from the old location "
+                "to %s (they will no longer be wiped by a HACS update).",
+                self.ip, self._state_file,
             )
             self._write_learned_file({str(k): v for k, v in learned.items()})
         return learned
@@ -1763,20 +1756,20 @@ class RaylogicModDevice:
             self._state_dir.mkdir(parents=True, exist_ok=True)
             self._state_file.write_text(json.dumps(snapshot))
         except OSError as err:
-            _LOGGER.warning("Raylogic %s: learned-state save fail: %s", self.ip, err)
+            _LOGGER.warning("Raylogic %s: failed to save learned state: %s", self.ip, err)
 
     def _save_learned(self) -> None:
-        # BUG FIX: pehle yahan seedha synchronous write_text() hota tha,
-        # jo _handle_ar() (listen_loop task) se, matlab HA ke event loop
-        # thread se hi call hota tha - slow disk par poora HA thodi der ke
-        # liye freeze ho sakta tha. Ab background thread mein likha jaata
-        # hai (fire-and-forget), event loop kabhi block nahi hota.
+        # BUG FIX: previously a synchronous write_text() happened right
+        # here, called from _handle_ar() (the listen_loop task), i.e. from
+        # HA's event-loop thread itself - on a slow disk the whole of HA
+        # could freeze for a while. It is now written in a background
+        # thread (fire-and-forget), so the event loop is never blocked.
         snapshot = {str(k): v for k, v in self._learned.items()}
         asyncio.create_task(asyncio.to_thread(self._write_learned_file, snapshot))
 
     def _learn_channel(self, ch_num: int, area: int) -> bool:
-        """Naya channel record karo. True return karta hai agar ye pehli
-        baar dekha gaya channel tha (matlab entity create karni chahiye)."""
+        """Record a new channel. Returns True if this channel was seen for
+        the first time (i.e. an entity should be created)."""
         is_new = ch_num not in self.channel_states
         if is_new or self.channel_states[ch_num].get("area") != area:
             self.channel_states[ch_num] = {
@@ -1798,10 +1791,10 @@ class RaylogicModDevice:
         area = state.get("area")
         if not area:
             _LOGGER.error(
-                "Raylogic %s: channel %d ka Area abhi maloom nahi hai "
-                "(LEARN mode mein ho aur ye channel abhi tak seekha nahi gaya) "
-                "- command bheja nahi ja sakta. Pehle Raylogic GO app ya "
-                "physical switch se is channel ko ek baar ON/OFF karo.",
+                "Raylogic %s: the Area of channel %d is not known yet "
+                "(LEARN mode, and this channel has not been learned yet) "
+                "- the command cannot be sent. First switch this channel "
+                "ON/OFF once from the Raylogic GO app or a physical switch.",
                 self.ip, ch_num,
             )
             return
@@ -1820,11 +1813,11 @@ class RaylogicModDevice:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _snap_to_off(brightness: Optional[int]) -> int:
-        """User-requested behaviour: jab HA slider ekdum neeche (1%) pe ho,
-        to light ko fully OFF kar do, "on but barely lit" mat rehne do.
-        HA ka brightness scale 0-255 hai, 1% ~ 2-3 ke barabar hai - is
-        poore near-zero range ko 0 (= OFF) treat karte hain. 0 return
-        karta hai agar effectively off honi chahiye, warna original
+        """User-requested behaviour: when the HA slider is all the way down
+        (1%), turn the light fully OFF instead of leaving it "on but barely
+        lit". HA's brightness scale is 0-255, and 1% is about 2-3 - this
+        whole near-zero range is treated as 0 (= OFF). Returns 0 if the
+        light should effectively be off, otherwise the original
         brightness."""
         if not brightness:
             return 0
@@ -1833,13 +1826,13 @@ class RaylogicModDevice:
         return brightness
 
     async def set_dimmer(self, ch_num: int, brightness: Optional[int]):
-        """brightness: 0-255 (HA scale), ya None/0 = off."""
+        """brightness: 0-255 (HA scale), or None/0 = off."""
         state = self.channel_states.get(ch_num, {})
         area = state.get("area")
         if not area:
             _LOGGER.error(
-                "Raylogic %s: channel %d ka Area maloom nahi hai - "
-                "dimmer command bheja nahi ja sakta.", self.ip, ch_num,
+                "Raylogic %s: the Area of channel %d is not known - "
+                "the dimmer command cannot be sent.", self.ip, ch_num,
             )
             return
         brightness = self._snap_to_off(brightness)
@@ -1847,9 +1840,10 @@ class RaylogicModDevice:
             level = DIMMER_LEVEL_OFF
         else:
             brightness = max(1, min(255, brightness))
-            # 255 (full) -> level 0x01, dim karte hue level badhta jaata hai.
-            # 254 tak hi jaane do - 255 (0xFF) sirf OFF ke liye reserved hai,
-            # warna sabse dim "on" brightness galti se OFF command ban jaata.
+            # 255 (full) -> level 0x01; the level increases as it dims.
+            # Only go up to 254 - 255 (0xFF) is reserved for OFF, otherwise
+            # the dimmest "on" brightness would accidentally become an OFF
+            # command.
             level = max(DIMMER_LEVEL_ON, min(254, 256 - brightness))
         cmd_hex = f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}{level:02X}{ch_num:02X}"
         await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
@@ -1861,40 +1855,39 @@ class RaylogicModDevice:
 
     # ------------------------------------------------------------------ #
     # Control - CTC (Colour Temperature Control / tunable white)
-    # See const.py ke CTC comment block ke liye dono sub-modes (single/
-    # double driver) ki poori wire-format explanation.
+    # See the CTC comment block in const.py for the full wire-format
+    # explanation of both sub-modes (single/double driver).
     # ------------------------------------------------------------------ #
     def _pair_bounds(self, ch_num: int) -> tuple[int, int]:
-        """Ye channel (ch_num) kis PAIR mein aata hai (MOD4U ke 2 pairs:
-        channel_start/+1, aur channel_start+2/+3) - us pair ke (lo, hi)
-        physical channel numbers return karta hai.
+        """Which PAIR this channel (ch_num) belongs to (the 2 pairs of a
+        MOD4U: channel_start/+1 and channel_start+2/+3) - returns the (lo,
+        hi) physical channel numbers of that pair.
 
-        BUG FIX (MOD2U -> MOD4U generalization): pehle CTC hamesha
-        (channel_start, channel_start+1) HARDCODED maanta tha - MOD2U mein
-        theek tha kyunki wahan ek hi pair hota tha, lekin MOD4U mein 2nd
-        pair (channel_start+2/+3) ka CTC isi wajah se TOOT jaata (1st
-        pair ke channels use ho jaate, jabki asli hardware kuch aur hota).
-        Ab pair configured channel ki apni position se derive hoti hai,
-        kisi bhi pair ke liye sahi kaam karta hai."""
+        BUG FIX (MOD2U -> MOD4U generalization): previously CTC always
+        assumed a HARDCODED (channel_start, channel_start+1) - which was
+        fine on the MOD2U because it only has one pair, but on the MOD4U
+        this BROKE CTC on the 2nd pair (channel_start+2/+3) (the 1st pair's
+        channels were used, while the real hardware was something else).
+        The pair is now derived from the configured channel's own position
+        and works correctly for any pair."""
         offset = ch_num - self._channel_start
         pair_index = offset // CHANNELS_PER_PAIR
         lo = self._channel_start + pair_index * CHANNELS_PER_PAIR
         return lo, lo + 1
 
     def _ctc_single_wire_channels(self, ch_num: int) -> tuple[int, int]:
-        """Single-driver CTC ek physical channel-PAIR use karta hai (jaise
-        channel 3 + channel 4), fixed 0x01/0x02 sub-signal id nahi (jaisa
-        pehle - sirf 1-channel capture dekh kar - galti se assume kiya gaya
-        tha). User-confirmed rule: pair ke DO physical channels mein se
-        chhote (lower) number wala colour-temperature hai, bade (higher)
-        number wala brightness hai.
+        """Single-driver CTC uses a physical channel PAIR (such as channel 3
+        + channel 4), not a fixed 0x01/0x02 sub-signal id (as was wrongly
+        assumed earlier, based on a single-channel capture only).
+        User-confirmed rule: of the TWO physical channels of the pair, the
+        lower number is colour temperature and the higher number is
+        brightness.
 
-        `ch_num` yahan is CTC entity ka apna (primary/configured) physical
-        channel number hai - iski PAIR (na ki hamesha device ka pehla
-        pair) is se derive hoti hai, taaki MOD4U par CTC Pair 1
-        (channel_start/+1) aur CTC Pair 2 (channel_start+2/+3) dono
-        independently, sahi apne-apne physical channels ke saath kaam
-        karein.
+        `ch_num` here is this CTC entity's own (primary/configured)
+        physical channel number - its PAIR (not always the device's first
+        pair) is derived from it, so that on a MOD4U both CTC Pair 1
+        (channel_start/+1) and CTC Pair 2 (channel_start+2/+3) work
+        independently, each with its own correct physical channels.
 
         Returns: (ct_channel, brightness_channel)."""
         lo, hi = self._pair_bounds(ch_num)
@@ -1905,19 +1898,19 @@ class RaylogicModDevice:
         brightness: Optional[int] = None,
         color_temp_kelvin: Optional[int] = None,
     ):
-        """brightness: 0-255 ya None (unchanged). color_temp_kelvin: None
-        (unchanged) ya Kelvin value HA slider se. Jo bhi param None nahi
-        hai wahi actually badla jaata hai - single-driver mode mein ye
-        do independent *AR= frames hain (bilkul jaisa capture mein tha),
-        double-driver mode mein dono hamesha ek hi combined *AZ= frame
-        mein jaate hain (kyunki us format mein warm/cool byte dono ek
-        saath encode hote hain - alag nahi bheje ja sakte)."""
+        """brightness: 0-255 or None (unchanged). color_temp_kelvin: None
+        (unchanged) or a Kelvin value from the HA slider. Only the params
+        that are not None are actually changed - in single-driver mode these
+        are two independent *AR= frames (exactly as in the capture); in
+        double-driver mode both always go into one combined *AZ= frame
+        (because in that format the warm/cool bytes are encoded together -
+        they cannot be sent separately)."""
         state = self.channel_states.get(ch_num, {})
         area = state.get("area")
         if not area:
             _LOGGER.error(
-                "Raylogic %s: channel %d (CTC) ka Area maloom nahi "
-                "hai - command bheja nahi ja sakta.", self.ip, ch_num,
+                "Raylogic %s: the Area of channel %d (CTC) is not "
+                "known - the command cannot be sent.", self.ip, ch_num,
             )
             return
         mode = state.get("ctc_mode", CTC_MODE_SINGLE)
@@ -1974,19 +1967,19 @@ class RaylogicModDevice:
 
         Wire: <area><ch_lo><level_lo><ch_hi><level_hi><const><pct>
 
-        BUG FIX (CCT/CTC kisi bhi doosre channel par kaam nahi karta tha):
-        pehle yahan channel bytes HARDCODED "01" aur "02" the. Wo galti
-        isliye pakdi nahi gayi kyunki jis MOD2U se capture liya gaya tha
-        uske CTC pair ke physical channels hi 1 aur 2 the. Area 12 wale
-        MOD4U par CTC pair channels 15-16 hai, to frame mein 0F/10 jaana
-        chahiye - 01/02 bhejne par device frame drop kar deta tha, isliye
-        CCT light bilkul respond nahi karti thi. Ab dono channel bytes is
-        CTC channel ki apni pair se derive hote hain.
+        BUG FIX (CCT/CTC did not work on any other channel): previously the
+        channel bytes here were HARDCODED "01" and "02". The mistake went
+        unnoticed because the MOD2U the capture was taken from had its CTC
+        pair on physical channels 1 and 2. On the Area 12 MOD4U the CTC pair
+        is on channels 15-16, so 0F/10 must go into the frame - sending
+        01/02 made the device drop the frame, which is why the CCT light did
+        not respond at all. Both channel bytes are now derived from this CTC
+        channel's own pair.
 
-        Wiring (user ne real hardware par confirm kiya): pair ka CHHOTA
-        physical channel = WHITE/cool driver, BADA channel = YELLOW/warm
-        driver - isliye level_lo mein cool aur level_hi mein warm jaata
-        hai."""
+        Wiring (confirmed by the user on real hardware): the LOWER physical
+        channel of the pair = WHITE/cool driver, the HIGHER channel =
+        YELLOW/warm driver - so cool goes into level_lo and warm into
+        level_hi."""
         cool_channel, warm_channel = self._pair_bounds(ch_num)
         kelvin = max(CTC_MIN_KELVIN, min(CTC_MAX_KELVIN, kelvin))
         warm_frac = 1 - (kelvin - CTC_MIN_KELVIN) / (CTC_MAX_KELVIN - CTC_MIN_KELVIN)
@@ -2024,25 +2017,27 @@ class RaylogicModDevice:
 
     @staticmethod
     def _double_levels_to_kelvin(cool_level: int, warm_level: int) -> Optional[int]:
-        """*AZ= ke cool + warm level bytes se colour temperature (v1.6.5).
+        """Colour temperature from the cool + warm level bytes of *AZ=
+        (v1.6.5).
 
-        Encoder (_send_ctc_double) har channel ko colour AUR brightness dono
-        se scale karta hai: output = share x brightness, byte = 256 - output
-        x 255, 0xFF = off. Pehle yahan sirf WARM byte se kelvin nikalta tha -
-        brightness 100% se kam hote hi galat (2700K @50% -> 4593K), aur agla
-        brightness-only command wahi galat kelvin bhej kar light ka rang
-        badal deta tha (simulator se confirm). Ab dono channel ka output
-        nikaal kar unka RATIO lete hain - brightness cancel ho jaati hai.
-        0xFF = exactly 0 output (pehle full cool 6485K padhta tha, ab 6500K).
-        Dono off, ya itna dim ki colour decode hi na ho -> None: caller
-        pichhla kelvin rakhe."""
+        The encoder (_send_ctc_double) scales each channel by both colour
+        AND brightness: output = share x brightness, byte = 256 - output x
+        255, 0xFF = off. Previously kelvin was derived from the WARM byte
+        only - which was wrong as soon as brightness was below 100%
+        (2700K @50% -> 4593K), and the next brightness-only command sent
+        that wrong kelvin and changed the light's colour (confirmed with
+        the simulator). Now the output of both channels is computed and
+        their RATIO is used - brightness cancels out. 0xFF = exactly 0
+        output (previously full cool read as 6485K, now 6500K). Both off,
+        or so dim that the colour cannot be decoded -> None: the caller
+        keeps the previous kelvin."""
         def out(level: int) -> float:
             return 0.0 if level >= 0xFF else (256 - max(1, level)) / 255
         cool, warm = out(cool_level), out(warm_level)
-        # Bahut kam brightness par byte me colour ki jaankari hi nahi bachti
-        # (1% par ek channel round hokar "off" ho jaata hai) - wahan andaaza
-        # store karne se agla command rang badal deta. 10% se kam total
-        # output par None: caller pichhla (sahi) kelvin rakhta hai.
+        # At very low brightness the bytes carry no colour information at
+        # all (at 1% one channel rounds to "off") - storing a guess there
+        # would make the next command change the colour. Below 10% total
+        # output return None: the caller keeps the previous (correct) kelvin.
         if cool + warm < _AZ_MIN_OUTPUT_FOR_KELVIN:
             return None
         warm_frac = warm / (cool + warm)
@@ -2051,23 +2046,22 @@ class RaylogicModDevice:
     def _find_ctc_channel(
         self, area: int, mode: str, wire_channel: Optional[int] = None
     ) -> Optional[int]:
-        """Configured CTC channel (agar koi ho) jo is Area aur is
-        sub-mode (single/double) se match karta hai - CTC ke liye
-        incoming frames ko normal ch_num-based lookup se PEHLE match
-        karna padta hai, kyunki wire 'channel' byte yahan sub-signal
-        (brightness/colour) hota hai, physical channel nahi.
+        """The configured CTC channel (if any) matching this Area and this
+        sub-mode (single/double) - for CTC, incoming frames have to be
+        matched BEFORE the normal ch_num-based lookup, because the wire
+        'channel' byte here is a sub-signal (brightness/colour), not a
+        physical channel.
 
-        BUG FIX (MOD2U -> MOD4U generalization): MOD2U mein sirf ek hi
-        CTC pair possible tha, isliye area+mode match hi kaafi tha. MOD4U
-        mein 2 pairs ho sakte hain - agar dono SAME Area mein CTC (single
-        mode) ho, purana code hamesha PEHLA match return karta, jisse
-        dono pairs ka data mix ho jaata (Pair 2 ka incoming frame galti
-        se Pair 1 ki entity update kar deta, ya vice versa). Ab agar
-        `wire_channel` diya gaya ho (single mode ke liye hamesha milta
-        hai, kyunki us frame mein real physical channel number hota hai),
-        us wire_channel ki apni PAIR match karne wale channel ko hi
-        return karte hain - dono pairs cleanly disambiguate ho jaate
-        hain, chahe Area same ho."""
+        BUG FIX (MOD2U -> MOD4U generalization): on the MOD2U only one CTC
+        pair was possible, so an area+mode match was enough. The MOD4U can
+        have 2 pairs - if both are CTC (single mode) in the SAME Area, the
+        old code always returned the FIRST match, which mixed up the data
+        of both pairs (an incoming Pair 2 frame wrongly updated the Pair 1
+        entity, or vice versa). Now, if `wire_channel` is given (always
+        available for single mode, because that frame carries the real
+        physical channel number), only the channel matching that
+        wire_channel's own PAIR is returned - both pairs are cleanly
+        disambiguated, even in the same Area."""
         candidates = [
             (cn, st) for cn, st in self.channel_states.items()
             if (
@@ -2080,18 +2074,18 @@ class RaylogicModDevice:
             return None
         if wire_channel is None:
             return candidates[0][0]
-        # Multiple CTC candidates (dono pairs same Area mein) - wire_channel
-        # ki pair se match karne wale ko hi pick karo.
+        # Multiple CTC candidates (both pairs in the same Area) - pick the
+        # one that matches wire_channel's pair.
         target_lo, target_hi = self._pair_bounds(wire_channel)
         for cn, _st in candidates:
             cn_lo, cn_hi = self._pair_bounds(cn)
             if (cn_lo, cn_hi) == (target_lo, target_hi):
                 return cn
-        # Fallback: agar sirf EK hi candidate hai to usi ko maan lo, chahe
-        # wire_channel uski pair se match na kare. Ye us purane firmware/
-        # frame-variant ke liye safety net hai jo channel byte ki jagah
-        # fixed 01/02 marker bhejta ho - us case mein bhi state-sync
-        # kaam karta rahega.
+        # Fallback: if there is only ONE candidate, use it even if
+        # wire_channel does not match its pair. This is a safety net for
+        # older firmware/frame variants that send a fixed 01/02 marker
+        # instead of the channel byte - state sync keeps working in that
+        # case too.
         if len(candidates) == 1:
             return candidates[0][0]
         return None
@@ -2112,14 +2106,15 @@ class RaylogicModDevice:
     def _handle_az(self, line: str):
         """*AZ= = double-driver CTC frame (cool+warm combined). Format:
         <area><ch_lo><cool_level><ch_hi><warm_level><64><pct> (7 bytes,
-        see const.py) - pair ka chhota physical channel = white/cool,
-        bada = yellow/warm (same wiring jo _send_ctc_double bhejta hai).
+        see const.py) - the lower physical channel of the pair = white/
+        cool, the higher = yellow/warm (the same wiring _send_ctc_double
+        sends).
 
-        BUG FIX: pehle ye parser `b[1] != 0x01 or b[3] != 0x02` par hi
-        return kar deta tha, matlab channel 1-2 ke alawa kisi bhi CTC
-        pair (jaise 15-16) ka incoming frame chup-chaap discard ho jaata
-        tha - HA mein CCT light ki state kabhi sync hi nahi hoti thi. Ab
-        koi bhi consecutive channel-pair accept hota hai."""
+        BUG FIX: previously this parser returned as soon as
+        `b[1] != 0x01 or b[3] != 0x02`, i.e. incoming frames for any CTC
+        pair other than channels 1-2 (such as 15-16) were silently
+        discarded - the CCT light's state in HA never synced. Any
+        consecutive channel pair is now accepted."""
         try:
             idx = line.find("*AZ=")
             if idx == -1:
@@ -2128,13 +2123,13 @@ class RaylogicModDevice:
             if len(hex_part) < 14:
                 self._log_once(
                     ("short", "*AZ="), logging.INFO,
-                    "Raylogic %s: chhota *AZ= frame ignore kiya: %s", self.ip, line[:120],
+                    "Raylogic %s: ignored a short *AZ= frame: %s", self.ip, line[:120],
                 )
                 return
             b = bytes.fromhex(hex_part)
             if len(b) < 7:
                 return
-            # ch_lo/ch_hi hamesha ek consecutive physical pair hote hain.
+            # ch_lo/ch_hi are always a consecutive physical pair.
             if b[3] != b[1] + 1:
                 return
             area = b[0]
@@ -2149,7 +2144,7 @@ class RaylogicModDevice:
             st = self.channel_states.setdefault(ch_num, {})
             st.update({"on": brightness > 0, "brightness": brightness})
             kelvin = self._double_levels_to_kelvin(cool_level, warm_level)
-            if kelvin is not None:      # off frame: pichhla colour yaad rakho
+            if kelvin is not None:      # off frame: keep the previous colour
                 st["color_temp_kelvin"] = kelvin
             if self.state_callback:
                 self.state_callback(self.ip, ch_num, st)
@@ -2157,7 +2152,7 @@ class RaylogicModDevice:
             _LOGGER.debug("Raylogic AZ parse error '%s': %s", line, exc)
             self._log_once(
                 ("bad", "*AZ="), logging.INFO,
-                "Raylogic %s: *AZ= frame samajh nahi aaya, ignore kiya: %s (%s)",
+                "Raylogic %s: could not parse an *AZ= frame, ignored: %s (%s)",
                 self.ip, line[:120], exc,
             )
 
@@ -2173,11 +2168,11 @@ class RaylogicModDevice:
         area = state.get("area")
         if not area:
             _LOGGER.error(
-                "Raylogic %s: channel %d ka Area maloom nahi hai - "
-                "fan command bheja nahi ja sakta.", self.ip, ch_num,
+                "Raylogic %s: the Area of channel %d is not known - "
+                "the fan command cannot be sent.", self.ip, ch_num,
             )
             return
-        # Nearest confirmed step le lo (0/25/50/75/100)
+        # Take the nearest confirmed step (0/25/50/75/100)
         step = min(FAN_SPEEDS.keys(), key=lambda k: abs(k - percentage))
         level = FAN_SPEEDS[step]
         cmd_hex = f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}{level:02X}{ch_num:02X}"
@@ -2191,16 +2186,15 @@ class RaylogicModDevice:
     # ------------------------------------------------------------------ #
     # Control - Curtain
     #
-    # BUG FIX (curtain kisi bhi doosre Area/channel par kaam nahi karta
-    # tha): pehle yahan 6 HARDCODED literal command strings the, jo ek hi
-    # device (Area 7, channels 3-6) ke capture se aaye the aur har device
-    # par jaise-ke-taise bhej diye jaate the. Curtain frame ka teesra byte
-    # ek GLOBAL curtain slot hai - Area 08 ke channels 23-24 ke liye 0x0C
-    # chahiye tha, lekin hamesha 0x02 hi ja raha tha, isliye device frame
-    # ko chup-chaap ignore kar deta tha (koi error bhi nahi milta tha, bas
-    # "kuch hota hi nahi" wala symptom). Ab poora frame channel se derive
-    # hota hai - dekho curtain_slot_for_channel() / curtain_frame() aur
-    # const.py ka Curtain block.
+    # BUG FIX (curtains did not work on any other Area/channel): previously
+    # there were 6 HARDCODED literal command strings here, taken from a
+    # capture of a single device (Area 7, channels 3-6) and sent unchanged
+    # to every device. The third byte of the curtain frame is a GLOBAL
+    # curtain slot - channels 23-24 in Area 08 needed 0x0C, but 0x02 was
+    # always sent, so the device silently ignored the frame (no error at
+    # all, just the "nothing happens" symptom). The whole frame is now
+    # derived from the channel - see curtain_slot_for_channel() /
+    # curtain_frame() and the Curtain block in const.py.
     # ------------------------------------------------------------------ #
     async def set_cover(self, ch_num: int, action: str):
         """action: 'open' | 'close' | 'stop'."""
@@ -2210,8 +2204,8 @@ class RaylogicModDevice:
         cmd_hex = self.curtain_frame(ch_num, action)
         if not cmd_hex:
             _LOGGER.warning(
-                "Raylogic %s %s: channel %d ke liye unknown curtain action "
-                "'%s' - kuch bheja nahi gaya.",
+                "Raylogic %s %s: unknown curtain action for channel %d "
+                "'%s' - nothing was sent.",
                 self._model_name, self.ip, ch_num, action,
             )
             return
@@ -2234,17 +2228,17 @@ class RaylogicModDevice:
     # Area scenes (v1.6.0)
     # ------------------------------------------------------------------ #
     async def recall_scene(self, area: int, scene: int):
-        """Raylogic GO app ka area-scene recall karo: *AR=000F<area><scene>00.
+        """Recall a Raylogic GO app area scene: *AR=000F<area><scene>00.
 
-        Bus broadcast hai - us Area ke saare fixtures react karte hain, sirf
-        is module ke channels nahi. _send_addressed() isse CLIENT_SENDER_ID
-        (099, app/keypad node) ke under bhejta hai aur baaki commands ki
-        tarah hi TCP-ACK verify + disconnect par queue/replay milta hai
-        (recall idempotent hai, dobara bhejna safe)."""
+        This is a bus broadcast - all fixtures in that Area react, not just
+        this module's channels. _send_addressed() sends it under
+        CLIENT_SENDER_ID (099, the app/keypad node) and, like all other
+        commands, it gets TCP-ACK verification + queue/replay on disconnect
+        (a recall is idempotent, so resending is safe)."""
         if not (1 <= area <= SCENE_AREAS and 1 <= scene <= SCENE_MAX):
             _LOGGER.warning(
                 "Raylogic %s %s: invalid scene recall area=%s scene=%s - "
-                "kuch bheja nahi gaya.", self._model_name, self.ip, area, scene,
+                "nothing was sent.", self._model_name, self.ip, area, scene,
             )
             return
         cmd_hex = f"00{SCENE_FUNC:02X}{area:02X}{scene:02X}00"
@@ -2263,26 +2257,27 @@ class RaylogicModDevice:
             try:
                 line = await self._read_line(timeout=float(LISTEN_READ_TIMEOUT))
             except ConnectionError as exc:
-                # Peer ne connection band kar di (EOF) - real disconnect,
-                # tight-loop nahi. Properly mark disconnected + normal
-                # reconnect-cycle trigger karo, aur loop se nikal jao.
+                # The peer closed the connection (EOF) - a real disconnect,
+                # not a tight loop. Properly mark it disconnected + trigger
+                # the normal reconnect cycle, and exit the loop.
                 if gen != self._conn_generation:
-                    return  # ye ek purani session ka task hai, chup-chaap jao
+                    return  # this task belongs to an old session, exit quietly
                 session = self._now() - self._session_started
                 self._record_session_result(session)
                 if session >= FAST_RECONNECT_MIN_SESSION:
-                    # Device ka normal/expected auto-disconnect - ise error
-                    # ki tarah shor machane ki zaroorat nahi, bas turant
-                    # wapas jud jao (dekho const.py FAST RECONNECT).
+                    # The device's normal/expected auto-disconnect - no need
+                    # to make noise about it as an error, just reconnect
+                    # immediately (see FAST RECONNECT in const.py).
                     _LOGGER.debug(
-                        "Raylogic %s %s: device ne %.0fs baad connection band "
-                        "ki (uska normal behaviour) - turant reconnect.",
+                        "Raylogic %s %s: the device closed the connection "
+                        "after %.0fs (its normal behaviour) - reconnecting "
+                        "immediately.",
                         self._model_name, self.ip, session,
                     )
                 else:
                     _LOGGER.warning(
-                        "Raylogic %s %s: %s (session sirf %.0fs chali) - "
-                        "disconnected mark kiya, reconnect trigger ho raha hai.",
+                        "Raylogic %s %s: %s (the session only lasted %.0fs) - "
+                        "marked as disconnected, triggering a reconnect.",
                         self._model_name, self.ip, exc, session,
                     )
                 self._connected = False
@@ -2295,22 +2290,22 @@ class RaylogicModDevice:
                 self._dispatch_line(line)
                 continue
 
-            # Read timeout - is window me device se kuch nahi aaya.
-            # STABILITY FIX (v1.5.0): pehle yahan kuch hota hi nahi tha,
-            # loop bas dobara read par baith jaata tha. Ek "half-dead"
-            # socket (jahan na EOF aata hai na data) ka pata tabhi chalta
-            # tha jab agla WRITE fail hota - matlab dead connection
-            # minute-scale tak "connected" dikhti reh sakti thi.
-            # Ab detection PASSIVE hai: device khud har 6-12s me apna
-            # *KA= bhejta hai, to itni der ki khamoshi = connection mar
-            # chuki hai. Ye faster bhi hai aur module ko chhedta bhi nahi
-            # (koi extra write nahi).
+            # Read timeout - nothing arrived from the device in this window.
+            # STABILITY FIX (v1.5.0): previously nothing happened here, the
+            # loop simply went back to reading. A "half-dead" socket (where
+            # neither EOF nor data arrives) was only detected when the next
+            # WRITE failed - so a dead connection could keep showing as
+            # "connected" on a minute scale.
+            # Detection is now PASSIVE: the device itself sends its *KA=
+            # every 6-12 s, so silence for this long = the connection is
+            # dead. This is faster and does not disturb the module either
+            # (no extra writes).
             idle = self._now() - self._last_rx
             if idle >= RX_SILENCE_TIMEOUT:
                 _LOGGER.warning(
-                    "Raylogic %s %s: %.0fs se device se koi frame nahi aaya "
-                    "(normally har 6-12s me aata hai) - connection dead maan "
-                    "kar reconnect kar rahe hain.",
+                    "Raylogic %s %s: no frame received from the device for "
+                    "%.0fs (normally one arrives every 6-12s) - treating the "
+                    "connection as dead and reconnecting.",
                     self._model_name, self.ip, idle,
                 )
                 self._last_session_len = self._now() - self._session_started
@@ -2320,31 +2315,31 @@ class RaylogicModDevice:
                 return
 
     async def _keepalive_loop(self, gen: int):
-        # SCALE FIX: pehli keepalive bhi thoda random delay ke saath, taaki
-        # bahut saare devices (100+) ka keepalive-write EXACTLY sync na ho
-        # jaaye (chhota fix hai, KEEPALIVE_INTERVAL chhota hai isliye asar
-        # bhi chhota hai, lekin resync jitter jaisa hi principle).
+        # SCALE FIX: the first keepalive also gets a small random delay, so
+        # that the keepalive writes of many devices (100+) do not become
+        # EXACTLY synchronized (a small fix - KEEPALIVE_INTERVAL is short,
+        # so the effect is small too, but it is the same principle as the
+        # resync jitter).
         #
-        # BUG FIX: same as _resync_loop() - ye random stagger pehle HAR
-        # reconnect ke naye task par fresh draw hota tha, na sirf HA
-        # startup par. Ab `self._resync_staggered` jaisa hi ek dedicated,
-        # instance-level flag (`self._keepalive_staggered`) use karke
-        # sirf is device-instance ki PEHLI keepalive-cycle mein hi random
-        # delay diya jaata hai - baad ke sab reconnects ke liye seedha
-        # normal KEEPALIVE_INTERVAL wait hota hai.
+        # BUG FIX: same as _resync_loop() - this random stagger used to be
+        # drawn fresh for the new task on EVERY reconnect, not only at HA
+        # startup. Now a dedicated instance-level flag
+        # (`self._keepalive_staggered`, just like `self._resync_staggered`)
+        # ensures the random delay is only applied in this device
+        # instance's FIRST keepalive cycle - all later reconnects simply
+        # wait the normal KEEPALIVE_INTERVAL.
         #
-        # STABILITY FIX (v1.5.0) - keepalive ab PASSIVE hai. Real logs se:
-        # device khud har 6-12 second me apna *KA= frame bhejta hai (10
-        # minute me 293 RX frames), jabki hum uske upar se 125 apne
-        # *KA=01 writes bhi thop rahe the. In sasta ESP8266-class modules
-        # ke liye har extra write ek extra risk hai (unka TCP stack hi
-        # kamzor hai) - aur wo write humein kuch nayi jaankari deta bhi
-        # nahi tha, kyunki liveness ka proof device ke apne frames se
-        # already mil raha tha.
+        # STABILITY FIX (v1.5.0) - the keepalive is now PASSIVE. From real
+        # logs: the device itself sends its *KA= frame every 6-12 seconds
+        # (293 RX frames in 10 minutes), while we were piling 125 of our own
+        # *KA=01 writes on top of that. For these cheap ESP8266-class
+        # modules every extra write is an extra risk (their TCP stack is
+        # weak) - and that write gave us no new information, because proof
+        # of liveness was already coming from the device's own frames.
         #
-        # Ab hum tabhi likhte hain jab device se KUCH bhi na aaya ho
-        # KEEPALIVE_INTERVAL tak. Normal halat me humara write count
-        # practically 0 ho jaata hai.
+        # We now only write when NOTHING at all has arrived from the device
+        # for KEEPALIVE_INTERVAL. Under normal conditions our write count
+        # drops to practically 0.
         if not self._keepalive_staggered:
             self._keepalive_staggered = True
             await asyncio.sleep(random.uniform(0, KEEPALIVE_INTERVAL))
@@ -2353,37 +2348,36 @@ class RaylogicModDevice:
             if not self._connected or gen != self._conn_generation:
                 return
 
-            # BUG FIX (test se pakda gaya): variant ko lock karne ka faisla
-            # pehle SIRF disconnect hone par hota tha - lekin agar variant
-            # sach me kaam kar jaaye to connection tootegi hi nahi, isliye
-            # lock kabhi hota hi nahi aur agle reconnect par code kaam
-            # karte hue format se hat jaata. Ab chalti hui session ko bhi
-            # yahin check kar lete hain.
+            # BUG FIX (caught by testing): the decision to lock a variant
+            # used to be made ONLY on disconnect - but if the variant really
+            # works, the connection never breaks, so the lock never happened
+            # and on the next reconnect the code moved away from the working
+            # format. The running session is now checked here as well.
             if not self._ka_variant_locked:
                 live = self._now() - self._session_started
                 if live >= KEEPALIVE_GOOD_SESSION:
                     idx = self._ka_variant % len(KEEPALIVE_VARIANTS)
                     self._ka_variant_locked = True
                     _LOGGER.info(
-                        "Raylogic %s %s: keepalive format '%s' se connection "
-                        "%.0fs se lagataar zinda hai (device ka ~12s wala "
-                        "auto-disconnect toot gaya) - ab hamesha yahi format "
-                        "use hoga.",
+                        "Raylogic %s %s: with keepalive format '%s' the "
+                        "connection has stayed alive continuously for %.0fs "
+                        "(the device's ~12s auto-disconnect was broken) - "
+                        "this format will always be used from now on.",
                         self._model_name, self.ip, KEEPALIVE_VARIANTS[idx], live,
                     )
 
-            # v1.5.3: asli keepalive ab device ke apne *KA= ka JAWAB hai
-            # (_answer_device_keepalive) - wahi device ko chahiye. Ye loop
-            # sirf ek fallback hai: agar kisi wajah se device ne KA na
-            # bheja ho aur humne bhi kuch der se kuch na likha ho, tab ek
-            # keepalive khud bhej do.
+            # v1.5.3: the real keepalive is now the REPLY to the device's
+            # own *KA= (_answer_device_keepalive) - that is what the device
+            # needs. This loop is only a fallback: if for some reason the
+            # device has not sent a KA and we have not written anything for
+            # a while either, send a keepalive ourselves.
             since_tx = self._now() - self._last_tx if self._last_tx else 1e9
             idle = self._now() - self._last_rx
             if since_tx < KEEPALIVE_IDLE_THRESHOLD and idle < KEEPALIVE_IDLE_THRESHOLD:
                 continue
             _LOGGER.debug(
-                "Raylogic %s: %.0fs se koi traffic nahi - fallback keepalive "
-                "bhej rahe hain.", self.ip, min(idle, since_tx),
+                "Raylogic %s: no traffic for %.0fs - sending a fallback "
+                "keepalive.", self.ip, min(idle, since_tx),
             )
             self._last_tx = self._now()
             await self._send_raw(self._keepalive_frame())
@@ -2393,19 +2387,19 @@ class RaylogicModDevice:
         if "*KA=" in line:
             self._handle_ka_line(line)
         elif "+AR40=" in line:
-            # NAYA MILA (typo/gap fix, is baar sirf VISIBILITY ke liye):
-            # device MOD4U se ye ek ALAG, khud-ba-khud (~19-20s) periodic
-            # frame hai. Iska byte-layout abhi decode nahi hua hai - sirf
-            # RX log mein saaf dikhega taaki 3-4 samples collect karke
-            # iska real structure decode kiya ja sake (agla concrete step,
-            # agar kabhi zaroorat pade).
-            # P5 (v1.6.4): ~20s me ek baar aata hai - har baar INFO log
-            # bahut devices par shor tha. Ab har connection-session me ek
-            # sample INFO par, baaki DEBUG par.
+            # NEWLY FOUND (typo/gap fix, this time for VISIBILITY only): this
+            # is a SEPARATE periodic frame that the MOD4U sends on its own
+            # (~19-20 s). Its byte layout has not been decoded yet - it is
+            # only shown clearly in the RX log so that 3-4 samples can be
+            # collected and its real structure decoded (the next concrete
+            # step, if it is ever needed).
+            # P5 (v1.6.4): it arrives about once every ~20 s - an INFO log
+            # every time was noisy with many devices. Now one sample per
+            # connection session is logged at INFO, the rest at DEBUG.
             self._log_once(
                 "ar40", logging.INFO,
-                "Raylogic %s: +AR40= status heartbeat mila (abhi tak "
-                "decode nahi kiya gaya, is session me dobara log nahi hoga) "
+                "Raylogic %s: received a +AR40= status heartbeat (not "
+                "decoded yet; it will not be logged again in this session) "
                 "- raw: %s", self.ip, line,
             )
             _LOGGER.debug("Raylogic %s: +AR40= raw: %s", self.ip, line)
@@ -2414,21 +2408,22 @@ class RaylogicModDevice:
         elif "*AR=" in line:
             self._handle_ar(line)
         else:
-            # P3: unknown frame type - ignore (pehle jaisa), lekin har type
-            # ek baar INFO par dikhe taaki naye firmware ka pata chale.
+            # P3: unknown frame type - ignored (as before), but each type is
+            # shown once at INFO so that new firmware can be noticed.
             m = _FRAME_TYPE_RE.search(line)
             kind = m.group(0) if m else "?"
             self._log_once(
                 ("unknown", kind), logging.INFO,
-                "Raylogic %s: unknown frame type %s ignore kiya (is type ka "
-                "sirf pehla sample log hota hai): %s", self.ip, kind, line[:120],
+                "Raylogic %s: ignored unknown frame type %s (only the first "
+                "sample of this type is logged): %s", self.ip, kind, line[:120],
             )
 
     def _decode_level(self, ch_type: str, level: int) -> dict:
-        """Incoming *AR= level byte ko channel-TYPE ke hisaab se decode karo.
-        Pehle ye hamesha Relay ka check (level==0x02) use karta tha - isliye
-        Dimmer/Fan channels ka status (aur Dimmer ki brightness) kabhi sahi
-        update hi nahi hota tha, chahe device se sahi frame aa raha ho."""
+        """Decode the level byte of an incoming *AR= according to the
+        channel TYPE. Previously this always used the Relay check
+        (level==0x02) - so the status of Dimmer/Fan channels (and the
+        Dimmer's brightness) was never updated correctly, even when the
+        device sent the correct frame."""
         if ch_type == CH_TYPE_DIMMER:
             if level == DIMMER_LEVEL_OFF:
                 return {"on": False, "brightness": 0}
@@ -2443,40 +2438,42 @@ class RaylogicModDevice:
             if step is None:
                 step = min(FAN_SPEEDS, key=lambda p: abs(FAN_SPEEDS[p] - level))
             return {"on": step > 0, "percentage": step}
-        # Relay (default). P4 (v1.6.4): sirf confirmed levels - 01 = OFF,
-        # 02 = ON. Pehle 02 ke alawa SAB kuch OFF maana jaata tha, to kisi
-        # firmware ka alag ON-level relay ko galti se OFF dikhata. Ab
-        # unknown level par state NAHI badalti (ek baar warning).
+        # Relay (default). P4 (v1.6.4): only the confirmed levels - 01 = OFF,
+        # 02 = ON. Previously EVERYTHING other than 02 was treated as OFF, so
+        # a firmware with a different ON level would wrongly show the relay
+        # as OFF. The state now does NOT change on an unknown level (one
+        # warning).
         if level == int(RELAY_LEVEL_ON, 16):
             return {"on": True}
         if level == int(RELAY_LEVEL_OFF, 16):
             return {"on": False}
         self._log_once(
             ("relay_level", level), logging.WARNING,
-            "Raylogic %s: relay ke liye unknown level 0x%02X mila (sirf 01=OFF "
-            "/ 02=ON confirmed hain) - state nahi badli. Ye naya firmware ho "
-            "sakta hai; is level ka sample issue me bhejo.", self.ip, level,
+            "Raylogic %s: received unknown level 0x%02X for a relay (only "
+            "01=OFF / 02=ON are confirmed) - state not changed. This may be "
+            "new firmware; please include a sample of this level in an "
+            "issue.", self.ip, level,
         )
         return {}
 
     def _handle_curtain_frame(self, b: bytes):
-        """Curtain echo (app ya physical switch se) - frame:
+        """Curtain echo (from the app or a physical switch) - frame:
               00 27 <slot> <dir> <run>    (open/close)
               00 26 <slot> 00   00        (stop)
 
-        Do kaam karta hai:
-          1. HA ki cover entity ki state sync karta hai (pehle ye frames
-             parse hi nahi hote the).
-          2. <run> byte (curtain ka travel parameter) SEEKH leta hai -
-             agar app kisi aur value se chalati hai to HA bhi aage se
-             wahi bhejega, hardcoded default nahi."""
+        It does two things:
+          1. Syncs the state of the HA cover entity (previously these frames
+             were not parsed at all).
+          2. LEARNS the <run> byte (the curtain's travel parameter) - if the
+             app operates it with a different value, HA will send that same
+             value from then on instead of the hardcoded default."""
         slot = b[2]
         ch_num = self._find_curtain_channel(slot)
         if ch_num is None:
             _LOGGER.debug(
-                "Raylogic %s: curtain frame slot %d (0x%02X) mila, lekin is "
-                "device par us slot ka koi configured curtain channel nahi "
-                "hai - ignore kiya.", self.ip, slot, slot,
+                "Raylogic %s: received a curtain frame for slot %d (0x%02X), "
+                "but this device has no configured curtain channel for that "
+                "slot - ignored.", self.ip, slot, slot,
             )
             return
         if b[1] == CURTAIN_CMD_STOP:
@@ -2490,8 +2487,8 @@ class RaylogicModDevice:
         if run and self._curtain_run_bytes.get(slot) != run:
             self._curtain_run_bytes[slot] = run
             _LOGGER.info(
-                "Raylogic %s: curtain slot %d ka 'run' byte device se seekh "
-                "liya: 0x%02X (ab HA bhi yahi bhejega).",
+                "Raylogic %s: learned the 'run' byte of curtain slot %d from "
+                "the device: 0x%02X (HA will now send the same value).",
                 self.ip, slot, run,
             )
         if direction not in (CURTAIN_DIR_OPEN, CURTAIN_DIR_CLOSE):
@@ -2502,35 +2499,37 @@ class RaylogicModDevice:
             self.state_callback(self.ip, ch_num, st)
 
     def _handle_ar(self, line: str):
-        """Mobile app ya kisi aur node se aaya *AR= echo - real-time sync ke
-        liye. Format: <ID>,<Seq>,*AR=00 1A <area> <level> <channel>
+        """*AR= echo from the mobile app or another node - for real-time
+        sync. Format: <ID>,<Seq>,*AR=00 1A <area> <level> <channel>
 
-        NOTE: is line ke wire par pehle "001,086," jaisa prefix bhi ho sakta
-        hai (Docklight/kisi aur client ka apna format) - hum bas "*AR=" ke
-        baad ka hex nikaalte hain, prefix se koi farak nahi padta.
+        NOTE: on the wire this line may also carry a prefix such as
+        "001,086," (Docklight's or another client's own format) - we simply
+        extract the hex after "*AR="; the prefix makes no difference.
         """
         try:
             idx = line.find("*AR=")
             if idx == -1:
                 return
-            # P3 (v1.6.4): "*AR= 001A.." / "00 1A 0C .." bhi chale - pehle
-            # fixed 10-char slice space aate hi chup-chaap fail hota tha.
+            # P3 (v1.6.4): "*AR= 001A.." / "00 1A 0C .." must work too -
+            # previously the fixed 10-char slice failed silently as soon as
+            # a space appeared.
             hex_part = "".join(line[idx + 4:].split())[:10]
             if len(hex_part) < 10:
                 self._log_once(
                     ("short", "*AR="), logging.INFO,
-                    "Raylogic %s: chhota *AR= frame ignore kiya: %s", self.ip, line[:120],
+                    "Raylogic %s: ignored a short *AR= frame: %s", self.ip, line[:120],
                 )
                 return
             b = bytes.fromhex(hex_part)
             if len(b) < 5:
                 return
 
-            # v1.6.0: area-scene recall echo (keypad / app / koi aur node):
-            #   00 0F <area> <scene> 00  -> select entity ka two-way feedback.
-            # Pehle ye frame neeche `b[1] != 0x1A` par chup-chaap discard
-            # hota tha. Channel-state par iska koi asar nahi (scene ke baad
-            # channels apne khud ke *AR=001A.. frames se update hote hain).
+            # v1.6.0: area-scene recall echo (keypad / app / another node):
+            #   00 0F <area> <scene> 00  -> two-way feedback for the select entity.
+            # Previously this frame was silently discarded by the
+            # `b[1] != 0x1A` check below. It has no effect on channel state
+            # (after a scene, channels are updated by their own
+            # *AR=001A.. frames).
             if b[0] == 0x00 and b[1] == SCENE_FUNC:
                 area, scene = b[2], b[3]
                 if 1 <= area <= SCENE_AREAS and 1 <= scene <= SCENE_MAX:
@@ -2539,12 +2538,11 @@ class RaylogicModDevice:
                         self.state_callback(self.ip, f"scene_{area}", {"scene": scene})
                 return
 
-            # NAYA: curtain frames (cmd 0x27 = open/close, 0x26 = stop)
-            # pehle yahin `b[1] != 0x1A` check par discard ho jaate the -
-            # matlab app/physical-switch se chalayi gayi curtain ka state
-            # HA mein kabhi reflect hi nahi hota tha. Curtain frame mein
-            # Area byte hota hi nahi, isliye match global curtain slot se
-            # hota hai.
+            # NEW: curtain frames (cmd 0x27 = open/close, 0x26 = stop) used
+            # to be discarded right here by the `b[1] != 0x1A` check - i.e.
+            # the state of a curtain operated from the app/physical switch
+            # was never reflected in HA. A curtain frame has no Area byte at
+            # all, so matching is done by the global curtain slot.
             if b[1] in (CURTAIN_CMD_MOVE, CURTAIN_CMD_STOP):
                 self._handle_curtain_frame(b)
                 return
@@ -2555,15 +2553,15 @@ class RaylogicModDevice:
             level = b[3]
             ch_num = b[4]
 
-            # CTC (single-driver) special case: iske liye "channel" byte
-            # (ch_num, yahan) YE HAI real physical channel number (jaise
-            # 3 ya 4) - fixed 0x01/0x02 sub-signal id NAHI (pehli galti,
-            # sirf 1-channel capture dekh kar assume kiya gaya tha). Pair
-            # ke andar chhota number = colour-temp, bada number =
-            # brightness (const.py comment dekho). Isliye ise normal
-            # ch_num-based lookup se PEHLE hi handle karna zaroori hai,
-            # warna ye galti se kisi doosre normal channel (jiska asli
-            # ch_num 1 ya 2 ho) ki state ko corrupt kar sakta tha.
+            # CTC (single-driver) special case: here the "channel" byte
+            # (ch_num) IS the real physical channel number (such as 3 or 4)
+            # - NOT a fixed 0x01/0x02 sub-signal id (the earlier mistake,
+            # assumed from a single-channel capture only). Within the pair,
+            # the lower number = colour temperature and the higher number =
+            # brightness (see the const.py comment). This is why it must be
+            # handled BEFORE the normal ch_num-based lookup, otherwise it
+            # could wrongly corrupt the state of another normal channel
+            # (whose real ch_num is 1 or 2).
             ctc_ch = self._find_ctc_channel(area, CTC_MODE_SINGLE, wire_channel=ch_num)
             if ctc_ch is not None:
                 ct_channel, brightness_channel = self._ctc_single_wire_channels(ctc_ch)
@@ -2571,19 +2569,19 @@ class RaylogicModDevice:
                     self._apply_ctc_single_update(ctc_ch, ch_num, level)
                     return
 
-            # Manual mode (Area configured, >0): sirf USI area ke frames
-            # accept karo, aur sirf pehle-se-configured channels ki state
-            # update karo - naye "phantom" channel apne aap mat bana do
-            # (isi wajah se pehle ek 2-channel MOD2U par galti se ch3/ch4
-            # bhi ban gaye the, kisi doosre device/area ke traffic se).
+            # Manual mode (Area configured, >0): only accept frames for THAT
+            # area, and only update the state of channels that are already
+            # configured - do not create new "phantom" channels automatically
+            # (this is why ch3/ch4 were once wrongly created on a 2-channel
+            # MOD2U, from another device's/area's traffic).
             if self._legacy_area and self._legacy_area > 0:
                 if area != self._legacy_area:
                     return
                 if ch_num not in self.channel_states:
                     _LOGGER.debug(
-                        "Raylogic %s: area=%d ch=%d ka *AR= frame "
-                        "aaya lekin ye channel manual config mein nahi hai "
-                        "- ignore kiya (kisi doosre device ka ho sakta hai).",
+                        "Raylogic %s: received an *AR= frame for area=%d "
+                        "ch=%d, but this channel is not in the manual config "
+                        "- ignored (it may belong to another device).",
                         self.ip, area, ch_num,
                     )
                     return
@@ -2593,10 +2591,10 @@ class RaylogicModDevice:
                     self.state_callback(self.ip, ch_num, self.channel_states[ch_num])
                 return
 
-            # LEARN mode (Area=0): naya channel discover hone par entity
-            # dynamically bana do - ye purana intended behavior hai. LEARN
-            # sirf Relay ke liye chalta hai (naya channel hamesha relay
-            # maan kar banaya jaata hai), isliye yahan seedha Relay decode.
+            # LEARN mode (Area=0): when a new channel is discovered, create
+            # its entity dynamically - this is the original intended
+            # behaviour. LEARN only works for Relay (a new channel is always
+            # created as a relay), hence the direct Relay decode here.
             is_new = self._learn_channel(ch_num, area)
             self.channel_states[ch_num].update(self._decode_level(CH_TYPE_RELAY, level))  # P4
 
@@ -2609,6 +2607,6 @@ class RaylogicModDevice:
             _LOGGER.debug("Raylogic AR parse error '%s': %s", line, exc)
             self._log_once(
                 ("bad", "*AR="), logging.INFO,
-                "Raylogic %s: *AR= frame samajh nahi aaya, ignore kiya (is "
-                "tarah ka sirf pehla log hota hai): %s (%s)", self.ip, line[:120], exc,
+                "Raylogic %s: could not parse an *AR= frame, ignored (only "
+                "the first occurrence of this kind is logged): %s (%s)", self.ip, line[:120], exc,
             )

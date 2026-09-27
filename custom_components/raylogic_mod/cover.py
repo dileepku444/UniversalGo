@@ -1,20 +1,20 @@
 """Raylogic MOD2U / MOD4U curtain platform.
 
-Curtain ek alag frame-shape use karta hai (cmd 0x27/0x26, na ki 0x1A) aur
-CTC ki tarah ek PAIRED mode hai - jis pair ka ek channel curtain banaya
-jaaye, wahi poora pair ek logical curtain entity ban jaata hai.
+A curtain uses a different frame shape (command 0x27/0x26 instead of 0x1A)
+and, like CTC, is a PAIRED mode: when one channel of a pair is configured as
+a curtain, the whole pair becomes a single logical curtain entity.
 
-Curtain ka wire frame ab poori tarah channel number se DERIVE hota hai
-(protocol.py -> curtain_slot_for_channel / curtain_frame, aur const.py ka
-Curtain block) - pehle yahan har pair ke liye hardcoded literal bytes
-chahiye hote the, jiski wajah se curtain sirf usi ek device par chalti
-thi jiska capture liya gaya tha. Ab har curtain channel ki entity banti
-hai, chahe device kisi bhi Area (1-16) mein ho.
+The curtain wire frame is now DERIVED entirely from the channel number
+(protocol.py -> curtain_slot_for_channel / curtain_frame, and the Curtain
+block in const.py). Previously every pair needed hardcoded literal bytes,
+so curtains only worked on the one device that had been captured. Now an
+entity is created for every curtain channel, whatever Area (1-16) the
+device is in.
 
-CTC (Double/Single Driver CCT) ab supported hai, lekin ek `light` entity
-ke taur par (Colour Temperature control) - dekho light.py -
-RaylogicModCtcLight. Yahan cover.py mein sirf isliye reference hai taaki
-CTC-type channel ke liye galti se doosri cover entity na ban jaaye.
+CTC (single/double driver CCT) is supported, but as a `light` entity
+(colour temperature control) - see light.py, RaylogicModCtcLight. It is
+referenced here only so that a CTC-type channel never accidentally gets an
+additional cover entity.
 """
 from __future__ import annotations
 import logging
@@ -35,15 +35,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
     for ch_num, state in device.channel_states.items():
         if state.get("type") == CH_TYPE_CURTAIN:
-            # BUG FIX: pehle yahan ek "kya is pair ke hardcoded curtain
-            # bytes const.py mein maujood hain?" wala gate tha - sirf 2
-            # pairs ke liye literal bytes the, isliye teesre pair se aage
-            # ki curtain entity banti hi nahi thi. Ab curtain frame poori
-            # tarah channel number se derive hota hai (protocol.py ka
-            # curtain_slot_for_channel/curtain_frame), isliye har curtain
-            # channel ki entity hamesha ban sakti hai - chahe device kisi
-            # bhi Area (1-16) mein ho aur uske channel numbers kuch bhi
-            # hon.
+            # BUG FIX: there used to be a gate here checking whether
+            # hardcoded curtain bytes for this pair existed in const.py.
+            # Literal bytes existed for only 2 pairs, so no curtain entity
+            # was created from the third pair onwards. The curtain frame is
+            # now derived entirely from the channel number (protocol.py's
+            # curtain_slot_for_channel/curtain_frame), so an entity can
+            # always be created for every curtain channel, whatever Area
+            # (1-16) the device is in and whatever its channel numbers are.
             _LOGGER.debug(
                 "Raylogic %s %s: curtain channel %d -> device pair %d, "
                 "global curtain slot %d (frame *AR=%s).",
@@ -55,8 +54,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
             entities.append(RaylogicModCover(hass, entry, device, ch_num, state))
         elif state.get("type") == CH_TYPE_CTC:
             _LOGGER.debug(
-                "Raylogic %s %s: channel %d CTC type hai - is platform "
-                "(cover) mein entity nahi banti, dekho 'light' platform "
+                "Raylogic %s %s: channel %d is of type CTC - no entity is "
+                "created on this (cover) platform; see the 'light' platform "
                 "(RaylogicModCtcLight).", device.model_name, device.ip, ch_num,
             )
     if entities:
@@ -98,14 +97,13 @@ class RaylogicModCover(CoverEntity):
 
     @property
     def available(self):
-        # UX FIX: user ne explicitly maanga - dashboard par kabhi
-        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
-        # background mein disconnect/reconnect ho raha ho. Entity
-        # hamesha apni last-known state (On/Off/brightness/etc.)
-        # dikhati rahegi. Underlying protocol layer disconnects
-        # ko khud silently/background mein handle karta hai (fast
-        # reconnect + command-queue-and-replay) - is availability
-        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        # UX FIX (explicit user requirement): the dashboard must never
+        # show "Unavailable" (greyed out), even while the device is
+        # disconnecting/reconnecting in the background. The entity
+        # always keeps showing its last known state (on/off/brightness/
+        # etc.). The protocol layer handles disconnects silently in the
+        # background (fast reconnect + command queue-and-replay), so the
+        # availability signal is no longer used for UI visibility.
         return True
 
     @property

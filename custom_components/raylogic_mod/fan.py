@@ -1,7 +1,7 @@
 """Raylogic MOD2U / MOD4U fan platform.
 
-Model_Number_Mod2u.txt capture se confirmed: 00 1A <area> <level> <channel>,
-level 0x01=off, 0x02..0x05 = speed 1-4 (25/50/75/100%).
+Confirmed from the Model_Number_Mod2u.txt capture: 00 1A <area> <level> <channel>,
+level 0x01 = off, 0x02..0x05 = speed 1-4 (25/50/75/100%).
 """
 from __future__ import annotations
 import logging
@@ -33,9 +33,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 class RaylogicModFan(FanEntity):
     _attr_has_entity_name = False
-    # HA (2024.8+) ab TURN_ON/TURN_OFF explicitly declare karwata hai, warna
-    # UI ka toggle "does not support action fan.turn_on" error deta hai -
-    # chahe async_turn_on/async_turn_off already implement kiye ho.
+    # Home Assistant 2024.8+ requires TURN_ON/TURN_OFF to be declared
+    # explicitly; otherwise the UI toggle fails with "does not support
+    # action fan.turn_on" even though async_turn_on/async_turn_off exist.
     _attr_supported_features = (
         FanEntityFeature.SET_SPEED
         | FanEntityFeature.TURN_ON
@@ -67,14 +67,13 @@ class RaylogicModFan(FanEntity):
 
     @property
     def available(self):
-        # UX FIX: user ne explicitly maanga - dashboard par kabhi
-        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
-        # background mein disconnect/reconnect ho raha ho. Entity
-        # hamesha apni last-known state (On/Off/brightness/etc.)
-        # dikhati rahegi. Underlying protocol layer disconnects
-        # ko khud silently/background mein handle karta hai (fast
-        # reconnect + command-queue-and-replay) - is availability
-        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        # UX FIX (explicit user requirement): the dashboard must never
+        # show "Unavailable" (greyed out), even while the device is
+        # disconnecting/reconnecting in the background. The entity
+        # always keeps showing its last known state (on/off/brightness/
+        # etc.). The protocol layer handles disconnects silently in the
+        # background (fast reconnect + command queue-and-replay), so the
+        # availability signal is no longer used for UI visibility.
         return True
 
     @property

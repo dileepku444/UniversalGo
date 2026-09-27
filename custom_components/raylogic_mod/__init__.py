@@ -1,12 +1,11 @@
 """Raylogic MOD2U / MOD4U integration - RE8-style config-entry architecture.
 
-Ek hi integration (domain: raylogic_mod) dono devices support karta hai -
-config_flow mein "Device Model" dropdown se MOD2U (2 channel, 1 pair) ya
-MOD4U (4 channel, 2 pairs) choose karo. Relay/Dimmer/Fan har channel
-independently set ho sakta hai, lekin Curtain aur CTC dono PAIRED modes
-hain - jis pair ka koi ek channel Curtain ya CTC banaya jaaye, wo poora
-pair (dono physical channels) ek hi logical entity ke andar consume ho
-jaata hai."""
+A single integration (domain: raylogic_mod) supports both devices - choose
+MOD2U (2 channels, 1 pair) or MOD4U (4 channels, 2 pairs) from the "Device
+Model" dropdown in the config flow. Relay/Dimmer/Fan can be set per channel
+independently, but Curtain and CTC are both PAIRED modes: when one channel
+of a pair is set to Curtain or CTC, the whole pair (both physical channels)
+is consumed by a single logical entity."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -28,29 +27,27 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
-# BUG FIX (THE SCALE BUG - "connection lost" cascades + HA UI hang jab
-# bahut saare (50-100+) devices add kiye jaayein): pehle state/available
-# updates hass.bus.async_fire() se GLOBAL event ke taur par bheje jaate
-# the ("raylogic_mod_state_update" / "raylogic_mod_available") - koi bhi
-# EK device apna keepalive/resync/command bhi fire kare, to HA ke andar
-# maujood HAR RAYLOGIC ENTITY (sab devices ke sab channels - switch/
-# light/fan/cover) ka listener chalta tha, sirf ye check karne ke liye
-# ki "ye event mera hai ya kisi aur device ka" (entry_id/channel match
-# karke). 100 devices x ~2-4 channels = ~300-400 entities x 2 listeners
-# = ~700-800 listener calls PER SINGLE EVENT - aur events (keepalive,
-# resync-har-45s, commands) khud bhi devices ki tadaad ke saath badhte
-# hain. Matlab total load ~O(devices^2) tarah badhta hai - isi wajah se
-# jitne zyada devices utna zyada "sab kuch slow/atka hua" (webpage load
-# na hona) mehsoos hota hai, chahe har individual device ka apna TCP/
-# reconnect logic bilkul theek ho.
+# BUG FIX (THE SCALE BUG - "connection lost" cascades and a hanging HA UI
+# when many (50-100+) devices are added): state/available updates used to
+# be sent as GLOBAL events via hass.bus.async_fire()
+# ("raylogic_mod_state_update" / "raylogic_mod_available"). Whenever ANY
+# single device fired a keepalive/resync/command event, the listener of
+# EVERY Raylogic entity in HA (all channels of all devices - switch/light/
+# fan/cover) ran, only to check "is this event mine or another device's?"
+# (by matching entry_id/channel). 100 devices x ~2-4 channels = ~300-400
+# entities x 2 listeners = ~700-800 listener calls PER SINGLE EVENT - and
+# the number of events (keepalive, resync every 45 s, commands) grows with
+# the device count as well. The total load therefore grew roughly as
+# O(devices^2), which is why "everything is slow/stuck" (web pages not
+# loading) got worse with more devices, even though each device's own
+# TCP/reconnect logic was fine.
 #
-# Fix: ab per-ENTRY (per physical device) scoped dispatcher signal use
-# hota hai ("raylogic_mod_<entry_id>_state_update" / "..._available") -
-# is signal ko sirf USI device ke entities hi listen karte hain, doosre
-# devices ke entities ko is event ka pata hi nahi chalta. Isse per-event
-# cost O(1) (us device ke apne channels jitna) ho jaata hai, poore
-# integration ke total device-count se independent - 100 devices bhi
-# 1 device jaisa hi smooth chalte hain.
+# Fix: a dispatcher signal scoped per ENTRY (per physical device) is now
+# used ("raylogic_mod_<entry_id>_state_update" / "..._available"). Only the
+# entities of THAT device listen to it; entities of other devices never see
+# the event. The per-event cost becomes O(1) (the device's own channels),
+# independent of the integration's total device count - 100 devices run as
+# smoothly as 1.
 
 from .const import (
     DEFAULT_PORT, DOMAIN, PLATFORMS,
@@ -68,7 +65,7 @@ from .discovery import other_integration_hosts
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sirf UI (config entries) se setup hota hai - YAML config nahi.
+# Set up from the UI (config entries) only - no YAML configuration.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_RECALL_SCENE = "recall_scene"
@@ -99,29 +96,28 @@ _PAIR_CONF_KEYS = (
 def _resolve_channel_types(
     conf: dict, channel_start: int, channel_count: int, fixed_type: str | None = None,
 ) -> tuple[dict[int, str], dict[int, str]]:
-    """Config (channel_1_type..channel_N_type) ko physical channel_types /
-    channel_ctc_modes dicts mein resolve karo - sirf is model ke
-    `channel_count` (MOD2U=2, MOD4U=4) tak ke pairs process hote hain,
-    baaki (agar MOD2U par galti se channel_3/4_type bhi save ho jaayein,
-    jaise model badalne par purana data reh gaya ho) ignore ho jaate hain.
+    """Resolve the config (channel_1_type..channel_N_type) into the physical
+    channel_types / channel_ctc_modes dicts. Only pairs up to this model's
+    `channel_count` (MOD2U=2, MOD4U=4) are processed; anything beyond that
+    (e.g. channel_3/4_type accidentally saved on a MOD2U, such as data left
+    over after changing the model) is ignored.
 
-    Har pair (lo, hi) ke liye:
-      - agar lo ka type 'ctc' ya 'curtain' hai -> sirf lo entry banti hai
-        (paired entity), hi ko IGNORE kiya jaata hai (uski apni entity
-        nahi banti - warna dono channels ke liye do alag entity bante jo
-        ek hi physical hardware par conflict karte).
-      - warna agar hi ka type 'ctc' ya 'curtain' hai -> sirf hi entry
+    For each pair (lo, hi):
+      - if lo's type is 'ctc' or 'curtain' -> only the lo entry is created
+        (paired entity) and hi is IGNORED (it gets no entity of its own -
+        otherwise two separate entities would conflict on the same physical
+        hardware).
+      - else if hi's type is 'ctc' or 'curtain' -> only the hi entry
         (same reason, symmetric case).
-      - warna (dono normal: relay/dimmer/fan) -> dono independently apni
-        apni entity paate hain.
+      - otherwise (both normal: relay/dimmer/fan) -> each channel gets its
+        own entity independently.
 
-    fixed_type models (jaise MOD2F - single fixed Fan channel): koi
-    "Select Type" choice hi nahi hoti, aur koi PAIRING bhi nahi hoti (1
-    channel ke liye pair-of-2 logic chalane se ek phantom "channel_start+1"
-    ban jaata jo physically exist hi nahi karta) - is liye ye ek seedha,
-    alag branch hai: channel_start se channel_count tak har physical
-    channel ko wahi fixed type de do, koi CTC mode nahi (Fan ko zaroorat
-    nahi).
+    fixed_type models (e.g. MOD2F - a single fixed fan channel): there is no
+    "Select Type" choice and no PAIRING (running the pair-of-2 logic for a
+    single channel would create a phantom "channel_start+1" that does not
+    physically exist). This is therefore a simple, separate branch: every
+    physical channel from channel_start up to channel_count gets the fixed
+    type, with no CTC mode (a fan does not need one).
     """
     if fixed_type:
         channel_types = {
@@ -157,7 +153,7 @@ def _resolve_channel_types(
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """raylogic_mod.recall_scene service ek hi baar register karo."""
+    """Register the raylogic_mod.recall_scene service once."""
     hass.data.setdefault(DOMAIN, {})
 
     async def _recall_scene(call: ServiceCall) -> None:
@@ -172,10 +168,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 # ---------------------------------------------------------------------- #
 # Automatic discovery (v1.6.6)
-# Pattern reference "raylogic" integration ke AUTO_SCAN se liya (wahan kuch
-# nahi badla): pehla scan AUTO_SCAN_FIRST_DELAY baad, phir har
-# AUTO_SCAN_INTERVAL. Har naya module "Discovered" card (integration_
-# discovery flow) banta hai - user bas "Add" dabata hai.
+# Pattern adopted from the reference "raylogic" integration's AUTO_SCAN
+# (nothing was changed there): the first scan runs after
+# AUTO_SCAN_FIRST_DELAY, then every AUTO_SCAN_INTERVAL. Every new module
+# becomes a "Discovered" card (integration_discovery flow) - the user only
+# presses "Add".
 # ---------------------------------------------------------------------- #
 _AUTO_SCAN_KEY = f"{DOMAIN}_auto_scan"
 
@@ -209,8 +206,8 @@ def _async_start_auto_discovery(hass: HomeAssistant) -> None:
 
 
 def auto_discovery_enabled(hass: HomeAssistant) -> bool:
-    """Poori integration ke liye ek setting: kisi bhi device ke Configure
-    me "Auto-discover" band kiya ho to background scan band."""
+    """One integration-wide setting: if "Auto-discover" is turned off in the
+    Configure dialog of any device, the background scan is disabled."""
     entries = [
         e for e in hass.config_entries.async_entries(DOMAIN)
         if e.source != SOURCE_IGNORE
@@ -221,9 +218,9 @@ def auto_discovery_enabled(hass: HomeAssistant) -> bool:
 
 
 async def async_auto_discovery_scan(hass: HomeAssistant) -> int:
-    """Ek background scan. Lautata hai kitne NAYE "Discovered" card bane.
-    Configured (raylogic_mod + raylogic) aur ignored hosts ko chhuta bhi
-    nahi; HA khud duplicate cards (same unique_id) abort kar deta hai."""
+    """One background scan. Returns how many NEW "Discovered" cards were
+    created. Configured (raylogic_mod + raylogic) and ignored hosts are never
+    touched; Home Assistant itself aborts duplicate cards (same unique_id)."""
     state = hass.data.get(_AUTO_SCAN_KEY)
     if state is None or state["running"] or not auto_discovery_enabled(hass):
         return 0
@@ -242,7 +239,7 @@ async def async_auto_discovery_scan(hass: HomeAssistant) -> int:
                 )
                 if res.get("type") != "abort":
                     started += 1
-            except Exception:  # ek kharab hit baaki ko na roke
+            except Exception:  # one bad hit must not stop the others
                 _LOGGER.debug("discovery flow for %s failed", hit.get("host"), exc_info=True)
         state["last"] = {"subnets": subnets, "hits": len(hits), "new": started}
         _LOGGER.debug(
@@ -251,8 +248,8 @@ async def async_auto_discovery_scan(hass: HomeAssistant) -> int:
         )
         if started:
             _LOGGER.info(
-                "Raylogic MOD auto-discovery: %d naya module mila - Settings > "
-                "Devices & services me 'Discovered' card par Add dabao: %s",
+                "Raylogic MOD auto-discovery: found %d new module(s) - press Add "
+                "on the 'Discovered' card in Settings > Devices & services: %s",
                 started, ", ".join(discovery.describe(h) for h in hits),
             )
         return started
@@ -271,7 +268,7 @@ def loaded_devices(hass: HomeAssistant) -> list[RaylogicModDevice]:
 
 
 def current_scene_map(hass: HomeAssistant) -> dict:
-    """Saari raylogic_mod entries ke Configure -> scene_counts ka union."""
+    """Union of the Configure -> scene_counts settings of all raylogic_mod entries."""
     return merge_scene_maps(
         e.options.get(CONF_SCENE_COUNTS, "")
         for e in hass.config_entries.async_entries(DOMAIN)
@@ -279,9 +276,10 @@ def current_scene_map(hass: HomeAssistant) -> dict:
 
 
 def claim_scene_host(hass: HomeAssistant, entry: ConfigEntry) -> dict | None:
-    """Area scenes poori installation ke liye EK hi set - jo entry pehle
-    aaye wahi "host". Host entry ke liye merged {area: [scenes]} lautata
-    hai, baaki sab ke liye None (duplicate entities nahi bante)."""
+    """Area scenes are ONE set for the whole installation - the entry that
+    comes first becomes the "host". Returns the merged {area: [scenes]} for
+    the host entry and None for every other entry (so no duplicate entities
+    are created)."""
     scenes = hass.data.setdefault(SCENE_DATA_KEY, {})
     if scenes.setdefault("host", entry.entry_id) != entry.entry_id:
         return None
@@ -290,30 +288,31 @@ def claim_scene_host(hass: HomeAssistant, entry: ConfigEntry) -> dict | None:
 
 
 async def async_recall_area_scene(hass: HomeAssistant, area: int, scene: int) -> int:
-    """Area scene har loaded raylogic_mod module par ek SAATH bhejo.
+    """Send an area scene recall to every loaded raylogic_mod module AT ONCE.
 
-    Modules alag-alag bus par ho sakte hain, isliye har ek ko apni copy
-    chahiye. Concurrent (asyncio.gather) bhejna zaroori hai - reference
-    integration me sequential bhejne se ~150-350ms ka gap aata tha jisme
-    modules active scene par disagree karte aur app me scene flicker hota.
-    Recall idempotent hai, isliye same bus par duplicate se state nahi
-    bigadti.
+    Modules may be on separate buses, so each needs its own copy. Sending
+    concurrently (asyncio.gather) matters: in the reference integration,
+    sending sequentially left a ~150-350 ms gap during which modules
+    disagreed on the active scene and the scene flickered in the app. A
+    recall is idempotent, so a duplicate on the same bus does not corrupt
+    the state.
 
-    Channel commands jaisa hi: jo module abhi disconnected hai uske liye
-    recall _send_addressed() ki queue me jaata hai aur reconnect par replay
-    hota hai (PENDING_COMMAND_MAX_AGE se purana ho to drop) - isliye scene
-    entities kabhi "Unavailable" nahi dikhate (baaki entities ki tarah)."""
+    Same as for channel commands: for a module that is currently
+    disconnected, the recall goes into the _send_addressed() queue and is
+    replayed on reconnect (dropped if older than PENDING_COMMAND_MAX_AGE) -
+    which is why scene entities never show "Unavailable" (like the other
+    entities)."""
     devs = loaded_devices(hass)
     if not devs:
         raise HomeAssistantError(
-            f"Raylogic MOD: koi module loaded nahi hai - area {area} "
-            f"scene {scene} recall nahi ho saka."
+            f"Raylogic MOD: no module is loaded - area {area} "
+            f"scene {scene} could not be recalled."
         )
     offline = [d.ip for d in devs if not d.is_connected]
     if offline:
         _LOGGER.info(
-            "Raylogic MOD: scene area=%d scene=%d - %s abhi disconnected, "
-            "recall queue me hai (reconnect par jaayega).",
+            "Raylogic MOD: scene area=%d scene=%d - %s currently disconnected, "
+            "recall queued (it will be sent on reconnect).",
             area, scene, ", ".join(offline),
         )
     results = await asyncio.gather(
@@ -325,46 +324,46 @@ async def async_recall_area_scene(hass: HomeAssistant, area: int, scene: int) ->
                 "Raylogic %s: scene recall area=%d scene=%d failed: %s",
                 dev.ip, area, scene, res,
             )
-    # HA ka apna recall bhi select entity me dikhe (099-node frame device
-    # echo nahi karta, isliye ye feedback yahin se dena padta hai).
+    # Show HA's own recall in the select entity too (the device does not
+    # echo a node-099 frame, so this feedback has to be given here).
     async_dispatcher_send(hass, SIGNAL_AREA_SCENE, area, scene)
     return len(devs)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    # options (naye "Configure" button se) data (initial add se) ke upar
-    # priority lete hain - taaki channel type badalne ke baad delete+re-add
-    # kiye bina bhi naya config turant effect kare.
+    # options (from the "Configure" button) take priority over data (from
+    # the initial add), so a changed channel type takes effect immediately
+    # without deleting and re-adding the device.
     conf = {**entry.data, **entry.options}
 
     host = conf[CONF_HOST]
     port = conf.get(CONF_PORT, DEFAULT_PORT)
-    # F3 (v1.6.1): sirf warning, block nahi - jo setup aaj chal raha hai wo
-    # na toote. (Naya add F2 se pehle hi ruk jaata hai; ye un entries ke
-    # liye hai jo F2 se pehle bani, ya Configure se host badla gaya.)
-    # Ek entry+host ke liye sirf EK baar - device offline ho to HA har
-    # ConfigEntryNotReady retry par setup dobara chalata hai (log spam).
+    # F3 (v1.6.1): warning only, no block - a setup that works today must not
+    # break. (A new add is already stopped by F2; this covers entries created
+    # before F2, or a host changed via Configure.)
+    # Only ONCE per entry+host - while a device is offline, HA re-runs setup
+    # on every ConfigEntryNotReady retry (log spam).
     warned = hass.data.setdefault(f"{DOMAIN}_overlap_warned", set())
     overlap_key = (entry.entry_id, str(host).strip())
     if overlap_key not in warned and overlap_key[1] in other_integration_hosts(hass):
         warned.add(overlap_key)
         _LOGGER.warning(
-            "Raylogic MOD %s: ye IP 'raylogic' (main) integration me bhi "
-            "configured hai - ek hi module par do integrations se do TCP "
-            "connections khulenge. Ek integration se is device ko hata do.",
+            "Raylogic MOD %s: this IP is also configured in the 'raylogic' "
+            "(main) integration - two integrations will open two TCP "
+            "connections to one module. Remove the device from one of them.",
             host,
         )
     model = conf.get(CONF_DEVICE_MODEL, DEFAULT_MODEL)
     model_info = DEVICE_MODELS.get(model, DEVICE_MODELS[DEFAULT_MODEL])
     channel_count = model_info["channel_count"]
-    # 0 = relay-only auto/learn mode - Area manually diya gaya nahi hai
+    # 0 = relay-only auto/learn mode - no Area entered manually
     legacy_area = conf.get(CONF_LEGACY_AREA, LEGACY_DEFAULT_AREA)
-    # Kai installations mein channel numbering 1 se shuru nahi hoti (Area ke
-    # andar globally assign hoti hai) - is device ka pehla channel number.
+    # In many installations channel numbering does not start at 1 (it is
+    # assigned globally within the Area) - this device's first channel number.
     channel_start = conf.get(CONF_CHANNEL_START, 1)
-    # Raylogic GO app mein jo type set kiya gaya hai (relay/dimmer/fan/
-    # curtain/ctc) - keys ab actual physical channel numbers hain
-    # (channel_start se shuru), model ke channel_count tak resolve hoti hai.
+    # The type set in the Raylogic GO app (relay/dimmer/fan/curtain/ctc) -
+    # keys are now the actual physical channel numbers (starting at
+    # channel_start), resolved up to the model's channel_count.
     channel_types, channel_ctc_modes = _resolve_channel_types(
         conf, channel_start, channel_count, fixed_type=model_info.get("fixed_type"),
     )
@@ -380,27 +379,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         state_callback=lambda ip, ch, state: _handle_state_update(
             hass, entry.entry_id, ip, ch, state
         ),
-        # P6: learned channels HA ke .storage me - HACS update se safe
+        # P6: learned channels are kept in HA's .storage - safe across HACS updates
         state_dir=hass.config.path(".storage", DOMAIN),
     )
 
-    # D1 (v1.6.3): stable id = entry.unique_id (host_port, add ke waqt fix;
-    # Configure se host badle to bhi same) - purane node/ip-based ids yahan
-    # migrate hote hain, platforms setup hone se PEHLE.
+    # D1 (v1.6.3): stable id = entry.unique_id (host_port, fixed when the
+    # device is added; unchanged if the host is changed via Configure) - old
+    # node/ip-based ids are migrated here, BEFORE the platforms are set up.
     device.stable_id = entry.unique_id or entry.entry_id
     _async_migrate_ids(hass, entry, device.stable_id)
 
     connected = await device.connect()
     if not connected:
-        # BUG FIX: pehle yahan `return False` tha - HA isse entry ko seedha
-        # "setup failed" maan leta tha, proper exponential-backoff retry
-        # nahi hoti thi. ConfigEntryNotReady raise karne se HA khud isse
-        # thodi thodi der mein retry karta rehta hai (jaisa device boot ke
-        # time thoda der se network par aaye) - startup "stuck" jaisa feel
-        # nahi hota, aur baad mein device aane par integration khud theek
-        # ho jaati hai, manual reload ki zaroorat nahi padti. (Ye alag hai
-        # us doosre "power-cycle ke baad hamesha ke liye atak jaana" bug
-        # se, jo AB fix ho chuka hai - dekho protocol.py ka _reconnect().)
+        # BUG FIX: this used to `return False` - HA then treated the entry as
+        # "setup failed" outright, with no proper exponential-backoff retry.
+        # Raising ConfigEntryNotReady makes HA retry by itself at intervals
+        # (e.g. when a device joins the network a little late after booting)
+        # - startup does not feel "stuck", and the integration recovers on
+        # its own once the device appears, without a manual reload. (This is
+        # separate from the other "stuck forever after a power cycle" bug,
+        # which is now fixed - see _reconnect() in protocol.py.)
         raise ConfigEntryNotReady(
             f"Could not connect to Raylogic {model_info['name']} at {host}:{port}"
         )
@@ -423,7 +421,7 @@ _OLD_UID_RE = re.compile(
 )
 _SCENE_DEVICE_ID = "area_scenes"
 
-# channel type -> (entity domain, unique_id suffix) - platforms ka exact mirror
+# channel type -> (entity domain, unique_id suffix) - exact mirror of the platforms
 _TYPE_TO_ENTITY = {
     CH_TYPE_RELAY: ("switch", ""),
     CH_TYPE_DIMMER: ("light", ""),
@@ -434,11 +432,11 @@ _TYPE_TO_ENTITY = {
 
 
 def _keeper_rank(ent, group) -> tuple:
-    """Duplicate group me original kaun hai: HA do entities ka same
-    entity_id hone par doosre ko "<id>_2", "_3"... deta hai - jo entity kisi
-    doosre candidate ke entity_id + "_N" hai wo pakka duplicate hai. (Sirf
-    created_at par bharosa nahi: delete+re-add par HA purana tombstone
-    uske purane created_at ke saath restore kar deta hai.)"""
+    """Which entity of a duplicate group is the original: when two entities
+    would get the same entity_id, HA gives the second one "<id>_2", "_3"...,
+    so an entity whose id is another candidate's entity_id + "_N" is
+    definitely the duplicate. (created_at alone is not reliable: after a
+    delete + re-add HA restores the old tombstone with its old created_at.)"""
     is_dup = any(
         other is not ent
         and re.fullmatch(re.escape(other.entity_id) + r"_\d+", ent.entity_id)
@@ -449,12 +447,12 @@ def _keeper_rank(ent, group) -> tuple:
 
 
 def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> None:
-    """Purane "<node>_<model>_chN" / "<ip>_<model>_chN" unique_ids ko
-    "<stable>_<model>_chN" par le jao. Ek channel ke do versions (node aur
-    ip, jinme se ek "_2" ban gaya tha) mile to ORIGINAL (sabse pehle bana)
-    entity_id rakho - dashboards/automations wahi use karte hain - aur
-    duplicate hata do. Device registry ke purane identifiers bhi ek hi
-    stable device me merge hote hain."""
+    """Move old "<node>_<model>_chN" / "<ip>_<model>_chN" unique_ids to
+    "<stable>_<model>_chN". If two versions of a channel exist (node and ip,
+    one of which became "_2"), keep the ORIGINAL (earliest created)
+    entity_id - dashboards/automations use that one - and remove the
+    duplicate. Old device registry identifiers are merged into one stable
+    device as well."""
     ent_reg = er.async_get(hass)
     groups: dict[tuple, list] = {}
     for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
@@ -479,14 +477,14 @@ def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> 
         for dup in ents:
             if dup.entity_id != keeper.entity_id:
                 _LOGGER.warning(
-                    "Raylogic MOD: duplicate entity %s hata rahe hain (%s ka "
-                    "hi doosra copy tha)", dup.entity_id, keeper.entity_id,
+                    "Raylogic MOD: removing duplicate entity %s (it was a second "
+                    "copy of %s)", dup.entity_id, keeper.entity_id,
                 )
                 ent_reg.async_remove(dup.entity_id)
         if keeper.device_id:
             kept_devices[keeper.device_id] = kept_devices.get(keeper.device_id, 0) + 1
 
-    # Device registry: (DOMAIN, node/ip) wale purane devices -> ek stable device
+    # Device registry: old (DOMAIN, node/ip) devices -> one stable device
     dev_reg = dr.async_get(hass)
     devices = [
         d for d in dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
@@ -498,9 +496,9 @@ def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> 
         (d for d in devices if (DOMAIN, stable) in d.identifiers), None,
     )
     if keeper_dev is None:
-        # Jis device par rakhi gayi (original) entities hain wahi original
-        # device hai - device-based automations isi ke device_id se jude
-        # hote hain. Tie ho to sabse pehle bana.
+        # The device that holds the kept (original) entities is the original
+        # device - device-based automations are bound to its device_id. On a
+        # tie, the earliest created one wins.
         keeper_dev = min(devices, key=lambda d: (
             -kept_devices.get(d.id, 0),
             getattr(d, "created_at", None) is None,
@@ -510,8 +508,8 @@ def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> 
     for dev in devices:
         if dev.id == keeper_dev.id:
             continue
-        # Pehle entities ko keeper device par shift karo, tabhi purana device
-        # hatao (device hatne par uski entities bhi hat jaati hain).
+        # Move the entities to the keeper device first, then remove the old
+        # device (removing a device also removes its entities).
         for ent in er.async_entries_for_device(ent_reg, dev.id, include_disabled_entities=True):
             ent_reg.async_update_entity(ent.entity_id, device_id=keeper_dev.id)
         dev_reg.async_remove_device(dev.id)
@@ -520,12 +518,12 @@ def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> 
 def _async_purge_stale(
     hass: HomeAssistant, entry: ConfigEntry, device: RaylogicModDevice, legacy_area: int,
 ) -> None:
-    """Is entry ki wo registry entities hatao jo ab bante hi nahi (Configure
-    se channel type / First Channel badla, ya scene hataya) - warna wo
-    hamesha "unavailable" orphan reh jaati hain. Channels config se aate
-    hain (device se discover nahi hote) isliye expected set deterministic
-    hai. LEARN mode (Area 0) me channels dheere-dheere seekhe jaate hain -
-    wahan kuch nahi hataate."""
+    """Remove this entry's registry entities that are no longer created (a
+    channel type / First Channel changed via Configure, or a scene removed) -
+    otherwise they remain as permanently "unavailable" orphans. Channels come
+    from the config (they are not discovered from the device), so the
+    expected set is deterministic. In LEARN mode (Area 0) channels are
+    learned gradually - nothing is removed there."""
     if not legacy_area or legacy_area <= 0:
         return
     expected: set[tuple[str, str]] = set()
@@ -543,19 +541,19 @@ def _async_purge_stale(
     for ent in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
         if ent.platform == DOMAIN and (ent.domain, ent.unique_id) not in expected:
             _LOGGER.info(
-                "Raylogic MOD: stale entity %s (%s) hata rahe hain - ab config "
-                "me nahi hai", ent.entity_id, ent.unique_id,
+                "Raylogic MOD: removing stale entity %s (%s) - no longer in "
+                "the config", ent.entity_id, ent.unique_id,
             )
             ent_reg.async_remove(ent.entity_id)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Options flow se save hote hi poora entry reload karo."""
+    """Reload the whole entry as soon as the options flow is saved."""
     await hass.config_entries.async_reload(entry.entry_id)
-    # Scene config kisi bhi device par set ho sakti hai, lekin scene/select
-    # entities sirf "scene host" entry par bante hain - agar merged map
-    # badla aur host koi DOOSRA entry hai, to use bhi reload karo taaki
-    # naye scenes ban jaayein / hate hue hat jaayein.
+    # The scene config can be set on any device, but scene/select entities
+    # are only created on the "scene host" entry - if the merged map changed
+    # and the host is a DIFFERENT entry, reload it too so new scenes are
+    # created and removed ones disappear.
     scenes = hass.data.get(SCENE_DATA_KEY, {})
     host_id = scenes.get("host")
     if (
@@ -580,9 +578,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Scene host wala device DELETE hua to area scenes kisi doosre loaded
-    device par wapas bana do (warna restart tak gayab rehte). Normal reload
-    me ye nahi chalta - wahan wahi entry dobara host ban jaati hai."""
+    """If the scene host device is DELETED, recreate the area scenes on
+    another loaded device (otherwise they would be missing until a restart).
+    This does not run on a normal reload - there the same entry becomes the
+    host again."""
     if hass.data.get(SCENE_DATA_KEY, {}).get("host"):
         return
     for other in hass.config_entries.async_entries(DOMAIN):
@@ -598,8 +597,8 @@ def _handle_state_update(hass, entry_id, ip, ch, state):
         )
         return
     if isinstance(ch, str) and ch.startswith("scene_"):
-        # Area-scene echo (protocol._handle_ar) - sirf scene selectors ke
-        # liye; channel entities tak nahi jaata.
+        # Area-scene echo (protocol._handle_ar) - for the scene selectors only;
+        # it is not sent to channel entities.
         async_dispatcher_send(
             hass, SIGNAL_AREA_SCENE, int(ch[len("scene_"):]), state["scene"],
         )

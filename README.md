@@ -2,149 +2,144 @@
 
 > **Unofficial community integration** - not affiliated with or endorsed by Raylogic Control Systems Pvt. Ltd. 'Raylogic' and its logo are trademarks of their owner.
 
-Ek hi integration, teeno devices ke liye:
+A single integration for all three devices:
 
 - **MOD2U** - 2 physical channels, 1 pair, universal type (Relay/Dimmer/Fan/Curtain/CTC)
 - **MOD4U** - 4 physical channels, 2 pairs, universal type (Relay/Dimmer/Fan/Curtain/CTC)
 - **MOD2F** - 1 physical channel, **fixed Fan type** (no Select Type option -
-  device hamesha Fan hi hota hai, config sirf Area + channel number maangta hai)
+  the device is always a Fan; the config only asks for Area + channel number)
 
 RE8-style config-flow architecture (Relay / Dimmer / Fan / Curtain / CTC
-per channel, MOD2F ke liye sirf Fan). Device add karte waqt "Device Model"
-dropdown se MOD2U, MOD4U, ya MOD2F chuno - baaki config screen usi model ke
-hisaab se sirf utne hi channel fields dikhata hai (MOD2U = 2, MOD4U = 4,
-MOD2F = 1 aur koi Type dropdown nahi).
+per channel, Fan only for the MOD2F). When adding a device, choose MOD2U,
+MOD4U or MOD2F from the "Device Model" dropdown - the rest of the config
+screen then shows only as many channel fields as that model has (MOD2U = 2,
+MOD4U = 4, MOD2F = 1 and no Type dropdown).
 
-Channels **PAIRS** mein hote hain:
+Channels come in **PAIRS**:
 
 - **Pair 1** = Channel 1 (+ Channel 2 on MOD4U)
 - **Pair 2** = Channel 3 + Channel 4 (MOD4U only)
 
-Relay, Dimmer, aur Fan har channel par **independently** set ho sakte hain.
-Curtain aur CTC (colour-temperature) dono **paired** modes hain - jis pair
-ka koi ek channel Curtain ya CTC banaya jaata hai, wahi pura pair (dono
-physical channels) ek hi logical entity ke andar internally consume ho
-jaata hai (2 alag entity nahi bantin).
+Relay, Dimmer and Fan can be set **independently** on every channel.
+Curtain and CTC (colour temperature) are both **paired** modes - when one
+channel of a pair is set to Curtain or CTC, the whole pair (both physical
+channels) is consumed internally by a single logical entity (no 2 separate
+entities are created).
 
 ## Setup
 
 1. Copy `custom_components/raylogic_mod` into your HA `config/custom_components/`.
 2. Restart Home Assistant.
 3. Settings -> Devices & Services -> Add Integration -> "Raylogic MOD2U / MOD4U / MOD2F".
-4. Step 1: IP Address, Port (default 5550), aur **Device Model** (MOD2U/MOD4U/MOD2F).
+4. Step 1: IP Address, Port (default 5550) and **Device Model** (MOD2U/MOD4U/MOD2F).
 5. Step 2 (MOD2U/MOD4U):
-   - **Area** - device ke Mod Settings screen par jo Area dikhta hai (e.g.
-     12, ya 16 for a CTC pair). `0` sirf tab use karo jab SAARE channels
-     Relay ho - HA khud Area seekh lega pehli baar app/switch se toggle
-     karne par. Dimmer/Fan/Curtain/CTC ke liye Area manually dena zaroori
-     hai.
-   - **Channel 1-N Type** - jo aapne Raylogic GO app ke "Select Type"
-     screen mein set kiya hai: `relay`, `dimmer`, `fan`, `curtain`, ya
-     `ctc`. Device khud apna type report nahi karta, isliye ye ek baar
-     yahan batana padta hai.
-   - **CTC / Curtain (paired types)**: Channel 1 (ya 3) Type ko `ctc`/
-     `curtain` set karne se Channel 2 (ya 4) Type field us pair ke liye
-     automatically ignore ho jaata hai - ek hi entity banti hai, do
-     conflicting nahi. CTC ke liye Driver Mode bhi batao (Single/Double,
-     jaisa app ke Mod Settings screen mein hai) - har pair independently.
-5. Step 2 (MOD2F): sirf 2 field - **Area** (device app mein jo dikhta hai,
-   e.g. 4) aur **First Channel Number** (device app ke "Start Address" jitna
-   hi, e.g. `9`). Koi Type dropdown nahi - Fan hamesha fixed hai. Area `0`
-   yahan nahi chalega (Fan Learn-mode support nahi karta, sirf Relay karta
-   hai) - integration khud isko block kar dega agar Area 0 chhoda.
+   - **Area** - the Area shown on the device's Mod Settings screen (e.g.
+     12, or 16 for a CTC pair). Only use `0` when ALL channels are Relay -
+     HA learns the Area by itself the first time a channel is toggled from
+     the app/switch. Dimmer/Fan/Curtain/CTC require the Area to be entered
+     manually.
+   - **Channel 1-N Type** - what you set on the "Select Type" screen of
+     the Raylogic GO app: `relay`, `dimmer`, `fan`, `curtain` or `ctc`.
+     The device does not report its own type, so it has to be entered here
+     once.
+   - **CTC / Curtain (paired types)**: setting Channel 1 (or 3) Type to
+     `ctc`/`curtain` makes the Channel 2 (or 4) Type field of that pair
+     automatically ignored - a single entity is created, not two
+     conflicting ones. For CTC, also select the Driver Mode (Single/Double,
+     as shown on the app's Mod Settings screen) - independently per pair.
+5. Step 2 (MOD2F): only 2 fields - **Area** (as shown in the device app,
+   e.g. 4) and **First Channel Number** (the same as the device app's
+   "Start Address", e.g. `9`). No Type dropdown - Fan is always fixed. Area
+   `0` does not work here (Fan does not support Learn mode, only Relay
+   does) - the integration blocks this if Area is left at 0.
 
-## Bug fixes is version mein (dono files se merge kiye gaye)
+## Bug fixes in this version (merged from both files)
 
-1. **THE MAIN FIX - device power-cycle ke baad HA permanently "stuck"**:
-   pehle connection-loss retry sirf **EK BAAR** (30 second baad) hota tha
-   - agar wahi ek attempt fail ho jaata (jaise device abhi reboot ho hi
-   raha ho - real-world power-cycle mein bilkul normal hai), integration
-   **hamesha ke liye** disconnected state mein reh jaata, chahe device
-   wapas up ho jaaye aur ping karta rahe. Ab `_reconnect()` ek proper
-   loop hai - device dobara reachable hote hi (agle 30s retry cycle par)
-   khud-ba-khud reconnect ho jaata hai, HA restart/reload ki zaroorat
-   nahi padti.
-2. **CTC pair-derivation bug** (MOD4U): CTC channel ki pair hamesha
-   `(channel_start, channel_start+1)` maani jaati thi - MOD2U mein theek
-   tha (sirf ek hi pair), lekin MOD4U ke 2nd pair (Channel 3-4) ka CTC
-   isi wajah se galat physical channels use karta. Ab har CTC entity
-   apni khud ki pair derive karti hai.
-3. **CTC same-Area disambiguation** (MOD4U): agar 2 Single-Driver CTC
-   pairs same Area mein configured hon, ab incoming frames sahi pair se
-   match hote hain (wire ke real channel number se), pehle jo bhi milta
-   wahi return nahi hota.
-4. **Curtain - dono pairs confirmed** (MOD4U): real MOD4U capture
-   (Area 7) se ab Pair 1 **aur** Pair 2 dono ke curtain open/close/stop
-   bytes confirmed hain (pehle sirf Pair 1 tha, aur wo bhi ek MOD2U
-   capture se guess kiya gaya tha jo galat nikla - real MOD4U byte
-   layout alag hai: pair-marker byte 0x02/0x03).
-5. Event-loop-blocking disk I/O (learned-channel save/load) background
-   thread mein move kiya gaya - slow SD-card/Pi storage par bhi poora HA
-   freeze nahi hota.
-6. Duplicate/overlapping TCP connections (jab read-error, write-error,
-   aur periodic-resync ek saath trigger ho jaayein) ek connect-lock se
-   roke gaye - device khud confuse ho kar atakta tha, isse bachne ke
-   liye.
-7. **BR40 log spam fix**: "BR40 auto-discovery nahi hui" WARNING pehle
-   HAR periodic resync (~45s) par bhi dobara-dobara aati thi, hamesha ke
-   liye (chahe device bilkul theek chal raha ho) - kyunki MOD2U/MOD4U/
-   MOD2F kisi ka bhi `br40_code` set nahi hai aur ye devices `?BR40=`
-   query ka jawab `+BR40=` se kabhi nahi dete (sirf khud-ba-khud
-   `+AR40=` heartbeat bhejte hain). Ab ye message connection ke lifetime
-   mein sirf ek baar WARNING mein aati hai, uske baad DEBUG mein.
-8. **MOD2F support added**: naya "single-channel, fixed Fan type" model.
-   Wire-protocol MOD2U/MOD4U jaisa hi hai (`00 1A <area> <level> <channel>`,
-   level 01=off/02-05=speed 1-4), isliye `protocol.py` mein koi naya
-   command-code chahiye hi nahi tha - sirf `const.py` mein ek naya model
-   entry aur `config_flow.py`/`__init__.py` mein "iske liye Type dropdown
-   mat dikhao, type hamesha Fan hai" wala chhota sa special-case.
-9. **THE STARTUP-SLOW ROOT CAUSE - duplicate config entries same device
-   par**: config-flow ka `unique_id` pehle non-deterministic tha - agar
-   device add karte waqt uska `*KA=` line 5-second validation window ke
-   andar mil jaata to `unique_id` = mac-jaisi string banti, warna sirf
-   raw host string. Isi wajah se same physical device (same IP:port) ko
-   agar kabhi dobara add karne ki koshish hoti (ya purani MOD2U/MOD4U
-   standalone integration se migrate karte waqt), to dono attempt ka
-   `unique_id` ALAG ban sakta tha - matlab duplicate-detection
-   (`_abort_if_unique_id_configured`) is duplicate ko pakadta hi nahi
-   tha, aur DO config entries usi ek IP par ban jaate the. Device agar
-   ek time par sirf ek hi TCP client accept karta hai (jaisa lag raha
-   hai), to dono entries ek-doosre se connection ke liye "fight" karte -
-   yahi HA startup slow/flaky hone ki asli wajah thi. Ab `unique_id`
-   hamesha sirf `host:port` se deterministically banta hai - same
-   IP:port ka doosra "Add" hamesha turant "already configured" bolke
-   abort ho jayega.
+1. **THE MAIN FIX - HA permanently "stuck" after a device power cycle**:
+   previously a connection-loss retry happened only **ONCE** (after 30
+   seconds) - if that single attempt failed (e.g. the device was still
+   rebooting, which is perfectly normal during a real-world power cycle),
+   the integration stayed disconnected **forever**, even after the device
+   came back up and kept answering pings. `_reconnect()` is now a proper
+   loop - as soon as the device is reachable again (on the next 30 s retry
+   cycle) it reconnects automatically, with no need to restart/reload HA.
+2. **CTC pair-derivation bug** (MOD4U): a CTC channel's pair was always
+   assumed to be `(channel_start, channel_start+1)` - fine on the MOD2U
+   (only one pair), but because of this the CTC on the MOD4U's 2nd pair
+   (Channel 3-4) used the wrong physical channels. Each CTC entity now
+   derives its own pair.
+3. **CTC same-Area disambiguation** (MOD4U): if 2 Single-Driver CTC pairs
+   are configured in the same Area, incoming frames are now matched to the
+   correct pair (by the real channel number on the wire) instead of simply
+   returning the first match.
+4. **Curtain - both pairs confirmed** (MOD4U): from a real MOD4U capture
+   (Area 7), the curtain open/close/stop bytes are now confirmed for both
+   Pair 1 **and** Pair 2 (previously only Pair 1 was, and even that was
+   guessed from a MOD2U capture that turned out to be wrong - the real
+   MOD4U byte layout is different: pair-marker byte 0x02/0x03).
+5. Event-loop-blocking disk I/O (learned-channel save/load) was moved to a
+   background thread - the whole of HA no longer freezes, even on slow
+   SD-card/Pi storage.
+6. Duplicate/overlapping TCP connections (when a read error, a write error
+   and the periodic resync trigger at the same time) are now prevented by a
+   connect lock - the device itself used to get confused and hang.
+7. **BR40 log spam fix**: the "BR40 auto-discovery failed" WARNING used to
+   reappear on EVERY periodic resync (~45 s), forever (even when the device
+   was working perfectly) - because none of MOD2U/MOD4U/MOD2F has a
+   `br40_code` set, and these devices never answer the `?BR40=` query with
+   `+BR40=` (they only send an unsolicited `+AR40=` heartbeat). This
+   message now appears as a WARNING only once per connection lifetime, and
+   at DEBUG after that.
+8. **MOD2F support added**: a new "single-channel, fixed Fan type" model.
+   The wire protocol is the same as MOD2U/MOD4U (`00 1A <area> <level> <channel>`,
+   level 01=off/02-05=speed 1-4), so `protocol.py` needed no new command
+   code at all - only a new model entry in `const.py` and a small special
+   case in `config_flow.py`/`__init__.py` ("do not show a Type dropdown for
+   this model, the type is always Fan").
+9. **THE STARTUP-SLOW ROOT CAUSE - duplicate config entries for the same
+   device**: the config flow's `unique_id` used to be non-deterministic -
+   if the device's `*KA=` line arrived within the 5-second validation
+   window while adding it, the `unique_id` became a MAC-like string,
+   otherwise just the raw host string. Because of this, if the same
+   physical device (same IP:port) was ever added again (or migrated from
+   the old standalone MOD2U/MOD4U integration), the two attempts could end
+   up with DIFFERENT `unique_id`s - so duplicate detection
+   (`_abort_if_unique_id_configured`) never caught the duplicate, and TWO
+   config entries were created for the same IP. If the device only accepts
+   one TCP client at a time (as appears to be the case), both entries
+   "fight" each other for the connection - this was the real reason HA
+   startup was slow/flaky. The `unique_id` is now always built
+   deterministically from `host:port` only - a second "Add" of the same
+   IP:port always aborts immediately with "already configured".
 
-   **IMPORTANT**: ye fix sirf AAGE se duplicate banne se rokta hai -
-   agar already 2 entries same IP ke liye ban chuki hain, unhe khud
-   Settings -> Devices & Services mein dhundh kar (jaise do baar
-   "Raylogic MOD2U 192.168.1.34" dikhega) extra wali delete karni
-   padegi.
+   **IMPORTANT**: this fix only prevents new duplicates from being created
+   - if 2 entries already exist for the same IP, find them yourself under
+   Settings -> Devices & Services (e.g. "Raylogic MOD2U 192.168.1.34"
+   appears twice) and delete the extra one.
 
 ## MOD2F
 
-Ek dedicated single-channel Fan module - Raylogic GO app mein iske liye
-"Select Type" screen hi nahi hota, module hamesha Fan hi hota hai. Isliye
-HA config flow mein bhi is model ke liye koi Channel Type dropdown nahi
-dikhta, bas:
+A dedicated single-channel Fan module - the Raylogic GO app has no "Select
+Type" screen for it; the module is always a Fan. So the HA config flow does
+not show a Channel Type dropdown for this model either, just:
 
-- **Area** - jo device app mein "Area" field mein dikhta hai (e.g. `4`).
-- **First Channel Number** - device app ke "Start Address" jitna hi
-  (e.g. `9`, wahi jo *AR= frame mein channel byte ke liye use hota hai).
+- **Area** - as shown in the "Area" field of the device app (e.g. `4`).
+- **First Channel Number** - the same as the device app's "Start Address"
+  (e.g. `9`, the value used as the channel byte in the *AR= frame).
 
-Area `0` (auto-learn) MOD2F par kaam nahi karta (sirf Relay devices ke
-liye hai) - config flow khud is combination ko block kar deta hai.
+Area `0` (auto-learn) does not work on the MOD2F (it is for Relay devices
+only) - the config flow blocks this combination by itself.
 
 ## Learn mode (Relay only, Area = 0)
 
-Agar Area `0` par chhod do aur channel Relay hai, HA passively `*AR=`
-frame sunta hai (jab aap app/physical switch se toggle karte ho), Area
-seekh leta hai, aur entity turant bana deta hai (restart nahi chahiye).
-Dimmer/Fan/Curtain/CTC ke liye ye kaam NAHI karta - unke liye Area
-manually dena zaroori hai.
+If the Area is left at `0` and the channel is a Relay, HA passively listens
+for `*AR=` frames (when you toggle from the app/a physical switch), learns
+the Area and creates the entity immediately (no restart needed). This does
+NOT work for Dimmer/Fan/Curtain/CTC - they require the Area to be entered
+manually.
 
 ## Repairs
 
-Agar kisi pair ke curtain bytes confirm nahi hain (future device variant
-mein), entity nahi banti aur Settings > Repairs mein ek issue dikhta hai
-jisme exact steps hain ki kaise capture karke share karo.
+If a pair's curtain bytes are not confirmed (in a future device variant),
+the entity is not created and an issue appears under Settings > Repairs
+with the exact steps for capturing and sharing the data.

@@ -1,7 +1,7 @@
 """Raylogic MOD2U / MOD4U dimmer platform.
 
-Model_Number_Mod2u.txt capture se confirmed: 00 1A <area> <level> <channel>,
-level 0x01=full, 0xFF=off, in-between=dim curve (linear approximation).
+Confirmed from the Model_Number_Mod2u.txt capture: 00 1A <area> <level> <channel>,
+level 0x01 = full, 0xFF = off, values in between = dim curve (linear approximation).
 """
 from __future__ import annotations
 import logging
@@ -69,14 +69,13 @@ class RaylogicModLight(LightEntity):
 
     @property
     def available(self):
-        # UX FIX: user ne explicitly maanga - dashboard par kabhi
-        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
-        # background mein disconnect/reconnect ho raha ho. Entity
-        # hamesha apni last-known state (On/Off/brightness/etc.)
-        # dikhati rahegi. Underlying protocol layer disconnects
-        # ko khud silently/background mein handle karta hai (fast
-        # reconnect + command-queue-and-replay) - is availability
-        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        # UX FIX (explicit user requirement): the dashboard must never
+        # show "Unavailable" (greyed out), even while the device is
+        # disconnecting/reconnecting in the background. The entity
+        # always keeps showing its last known state (on/off/brightness/
+        # etc.). The protocol layer handles disconnects silently in the
+        # background (fast reconnect + command queue-and-replay), so the
+        # availability signal is no longer used for UI visibility.
         return True
 
     @property
@@ -90,13 +89,12 @@ class RaylogicModLight(LightEntity):
     async def async_turn_on(self, **kwargs):
         brightness = kwargs.get("brightness", self._brightness or 255)
         await self._device.set_dimmer(self._ch_num, brightness)
-        # State device.channel_states se lo (na ki yahan diye gaye raw
-        # brightness se) - set_dimmer andar 1% ya usse kam brightness ko
-        # "snap to OFF" karta hai (user ke kehne par: slider ekdum neeche
-        # jaaye to light poori tarah OFF ho, "on but barely lit" nahi),
-        # aur pehle wala 0-brightness "ON" mismatch bhi isi tarah avoid
-        # hota hai - dono jagah alag-alag logic likhne se woh drift kar
-        # sakte the.
+        # Take the state from device.channel_states (not from the raw
+        # brightness passed in here): set_dimmer "snaps to OFF" at 1% or
+        # less (user requirement: when the slider is moved all the way down
+        # the light turns fully OFF rather than "on but barely lit"), and
+        # the earlier 0-brightness "ON" mismatch is avoided the same way.
+        # Duplicating that logic in two places would let them drift apart.
         st = self._device.channel_states.get(self._ch_num, {})
         self._is_on = bool(st.get("on", False))
         self._brightness = st.get("brightness", 0)
@@ -186,14 +184,13 @@ class RaylogicModCtcLight(LightEntity):
 
     @property
     def available(self):
-        # UX FIX: user ne explicitly maanga - dashboard par kabhi
-        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
-        # background mein disconnect/reconnect ho raha ho. Entity
-        # hamesha apni last-known state (On/Off/brightness/etc.)
-        # dikhati rahegi. Underlying protocol layer disconnects
-        # ko khud silently/background mein handle karta hai (fast
-        # reconnect + command-queue-and-replay) - is availability
-        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        # UX FIX (explicit user requirement): the dashboard must never
+        # show "Unavailable" (greyed out), even while the device is
+        # disconnecting/reconnecting in the background. The entity
+        # always keeps showing its last known state (on/off/brightness/
+        # etc.). The protocol layer handles disconnects silently in the
+        # background (fast reconnect + command queue-and-replay), so the
+        # availability signal is no longer used for UI visibility.
         return True
 
     @property
@@ -211,19 +208,19 @@ class RaylogicModCtcLight(LightEntity):
     async def async_turn_on(self, **kwargs):
         brightness = kwargs.get("brightness")
         kelvin = kwargs.get("color_temp_kelvin")
-        # Sirf turn_on (bina brightness diye) call ho to full brightness
-        # par ON karo - jaisa regular dimmer light bhi karta hai.
+        # A plain turn_on (without brightness) switches on at full
+        # brightness - the same as a regular dimmer light.
         if brightness is None and not self._is_on:
             brightness = self._brightness or 255
         await self._device.set_ctc(
             self._ch_num, brightness=brightness, color_temp_kelvin=kelvin,
         )
-        # State device.channel_states se lo - set_ctc andar 1% (ya kam)
-        # brightness ko "snap to OFF" karta hai (slider ekdum neeche jaaye
-        # to light poori tarah OFF ho jaaye), aur brightness=0 wala
-        # ON/OFF mismatch bhi isi se sahi reflect hota hai. Kelvin-only
-        # calls (brightness=None) mein device ka "on" waisa hi rehta hai
-        # jaisa pehle tha, isliye wahan bhi wahi se lo.
+        # Take the state from device.channel_states: set_ctc "snaps to
+        # OFF" at 1% brightness or less (slider all the way down turns the
+        # light fully OFF), and the brightness=0 ON/OFF mismatch is also
+        # reflected correctly this way. For kelvin-only calls
+        # (brightness=None) the device's "on" flag stays as it was, so it
+        # is read from there as well.
         st = self._device.channel_states.get(self._ch_num, {})
         self._is_on = bool(st.get("on", False))
         self._brightness = st.get("brightness", 0)

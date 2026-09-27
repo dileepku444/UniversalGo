@@ -1,7 +1,7 @@
 """Raylogic MOD2U / MOD4U relay/switch platform.
 
-Har channel jo config_flow mein 'Relay' type select kiya gaya hai (ya
-LEARN mode mein default), wahi is platform mein switch entity banta hai.
+Every channel configured as type 'Relay' in the config flow (or learned as
+a relay in LEARN mode) becomes a switch entity on this platform.
 """
 from __future__ import annotations
 import logging
@@ -29,15 +29,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
         async_add_entities(entities)
     else:
         _LOGGER.info(
-            "Raylogic %s: koi channel abhi tak nahi seekha gaya "
-            "(LEARN mode). Raylogic GO app ya physical switch se ek baar "
-            "har channel ko ON/OFF karo - entity turant apne aap ban jayegi.",
+            "Raylogic %s: no channel has been learned yet (LEARN mode). "
+            "Switch each channel ON/OFF once from the Raylogic GO app or a "
+            "physical switch - its entity will be created automatically.",
             device.ip,
         )
 
-    # LEARN mode mein naye channels runtime pe seekhe jaate hain - jab bhi
-    # aisa hota hai, protocol.py is callback ko call karega taaki entity
-    # DYNAMICALLY (HA restart kiye bina) add ho sake.
+    # In LEARN mode new channels are learned at runtime - whenever that
+    # happens, protocol.py calls this callback so the entity can be added
+    # DYNAMICALLY (without restarting Home Assistant).
     def _on_new_channel(ch_num, state):
         async_add_entities([RaylogicModSwitch(hass, entry, device, ch_num, state)])
 
@@ -71,14 +71,13 @@ class RaylogicModSwitch(SwitchEntity):
 
     @property
     def available(self):
-        # UX FIX: user ne explicitly maanga - dashboard par kabhi
-        # bhi "Unavailable" (grey) nahi dikhna chahiye, chahe device
-        # background mein disconnect/reconnect ho raha ho. Entity
-        # hamesha apni last-known state (On/Off/brightness/etc.)
-        # dikhati rahegi. Underlying protocol layer disconnects
-        # ko khud silently/background mein handle karta hai (fast
-        # reconnect + command-queue-and-replay) - is availability
-        # signal ko sirf UI-visibility ke liye use nahi karte ab.
+        # UX FIX (explicit user requirement): the dashboard must never
+        # show "Unavailable" (greyed out), even while the device is
+        # disconnecting/reconnecting in the background. The entity
+        # always keeps showing its last known state (on/off/brightness/
+        # etc.). The protocol layer handles disconnects silently in the
+        # background (fast reconnect + command queue-and-replay), so the
+        # availability signal is no longer used for UI visibility.
         return True
 
     @property
@@ -96,11 +95,11 @@ class RaylogicModSwitch(SwitchEntity):
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
-        # SCALE FIX: pehle hass.bus par GLOBAL event listen hota tha (sab
-        # devices ke sab entities isse fire hote), ab sirf isi device
-        # (entry_id) ke liye scoped dispatcher signal - doosre devices ke
-        # updates is entity tak pahunchte hi nahi, chahe kitne bhi devices
-        # (100+) HA mein add ho jaayein.
+        # SCALE FIX: this used to listen to a GLOBAL hass.bus event (fired
+        # for every entity of every device); it now uses a dispatcher signal
+        # scoped to this device (entry_id), so updates from other devices
+        # never reach this entity, no matter how many devices (100+) are
+        # added to Home Assistant.
         self.async_on_remove(
             async_dispatcher_connect(
                 self._hass,
