@@ -9,7 +9,9 @@ import logging
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, CH_TYPE_FAN
 from .protocol import RaylogicModDevice
@@ -31,7 +33,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         async_add_entities(entities)
 
 
-class RaylogicModFan(FanEntity):
+class RaylogicModFan(FanEntity, RestoreEntity):
     _attr_has_entity_name = False
     # Home Assistant 2024.8+ requires TURN_ON/TURN_OFF to be declared
     # explicitly; otherwise the UI toggle fails with "does not support
@@ -117,6 +119,20 @@ class RaylogicModFan(FanEntity):
                 self._on_available,
             )
         )
+
+        # F1 (v1.7.0): the module never reports its state on its own and
+        # answers no state query, so after an HA restart/reload the last
+        # known state is restored (a real frame that already arrived wins).
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            if self._device.restore_channel(self._ch_num, self._restore_payload(last)):
+                self._on_update(self._ch_num, self._device.channel_states[self._ch_num])
+
+    @staticmethod
+    def _restore_payload(last) -> dict:
+        on = last.state == "on"
+        pct = last.attributes.get("percentage") or (100 if on else 0)
+        return {"on": on, "percentage": pct if on else 0}
 
     @callback
     def _on_update(self, ch_num, state):

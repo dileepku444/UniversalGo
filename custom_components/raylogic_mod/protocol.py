@@ -328,6 +328,13 @@ class RaylogicModDevice:
         # is restored to this state and HA is updated.
         self._cmd_channel: dict[str, int] = {}
         self._pre_state: dict[int, dict] = {}
+        # v1.7.0 (F1): channels whose state has been reported by a real
+        # frame from the bus since this device object was created. The
+        # module never reports state on its own and answers no state query,
+        # so after an HA restart/reload the last known state is restored
+        # from HA's state store - but only for channels NOT in this set
+        # (a real frame always wins over a restored value).
+        self._confirmed: set[int] = set()
         # P3 (v1.6.7): one outage = one ERROR + one WARNING, the rest DEBUG;
         # one INFO when it comes back (how long it was offline).
         self._outage_since: Optional[float] = None
@@ -1163,6 +1170,26 @@ class RaylogicModDevice:
         )
         if self.state_callback:
             self.state_callback(self.ip, ch, self.channel_states[ch])
+
+    def _note_rx(self, ch: int) -> None:
+        """A real frame from the bus just reported this channel's state.
+
+        F1: from now on a restored (last known) state must not overwrite it.
+        F4: a pending "false success" revert for this channel is cancelled -
+        the snapshot taken before the command is older than this frame, so
+        reverting to it later would replace the real state with a stale one.
+        """
+        self._confirmed.add(ch)
+        self._pre_state.pop(ch, None)
+
+    def restore_channel(self, ch: int, restored: dict) -> bool:
+        """F1 (v1.7.0): apply the last known state from HA's state store at
+        startup. Returns True if it was applied. Skipped when a real frame
+        has already reported this channel. Nothing is sent to the module."""
+        if ch in self._confirmed or ch not in self.channel_states or not restored:
+            return False
+        self.channel_states[ch].update(restored)
+        return True
 
     def _expire_pending(self) -> None:
         """Drop + revert queued commands older than PENDING_COMMAND_MAX_AGE.
@@ -2092,6 +2119,7 @@ class RaylogicModDevice:
 
     def _apply_ctc_single_update(self, ch_num: int, wire_channel: int, level: int):
         st = self.channel_states.setdefault(ch_num, {})
+        self._note_rx(ch_num)
         _ct_channel, brightness_channel = self._ctc_single_wire_channels(ch_num)
         if wire_channel == brightness_channel:
             if level == CTC_SINGLE_BRIGHTNESS_OFF:
@@ -2142,6 +2170,7 @@ class RaylogicModDevice:
                 return
             brightness = max(0, min(255, round(pct * 255 / 100)))
             st = self.channel_states.setdefault(ch_num, {})
+            self._note_rx(ch_num)
             st.update({"on": brightness > 0, "brightness": brightness})
             kelvin = self._double_levels_to_kelvin(cool_level, warm_level)
             if kelvin is not None:      # off frame: keep the previous colour
@@ -2494,6 +2523,7 @@ class RaylogicModDevice:
         if direction not in (CURTAIN_DIR_OPEN, CURTAIN_DIR_CLOSE):
             return
         st = self.channel_states.setdefault(ch_num, {})
+        self._note_rx(ch_num)
         st.update({"on": direction == CURTAIN_DIR_OPEN, "moving": True})
         if self.state_callback:
             self.state_callback(self.ip, ch_num, st)
@@ -2586,6 +2616,7 @@ class RaylogicModDevice:
                     )
                     return
                 ch_type = self.channel_states[ch_num].get("type", CH_TYPE_RELAY)
+                self._note_rx(ch_num)
                 self.channel_states[ch_num].update(self._decode_level(ch_type, level))
                 if self.state_callback:
                     self.state_callback(self.ip, ch_num, self.channel_states[ch_num])
@@ -2596,6 +2627,7 @@ class RaylogicModDevice:
             # behaviour. LEARN only works for Relay (a new channel is always
             # created as a relay), hence the direct Relay decode here.
             is_new = self._learn_channel(ch_num, area)
+            self._note_rx(ch_num)
             self.channel_states[ch_num].update(self._decode_level(CH_TYPE_RELAY, level))  # P4
 
             if is_new and self.new_channel_callback:

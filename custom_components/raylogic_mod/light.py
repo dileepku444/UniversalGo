@@ -9,7 +9,9 @@ import logging
 from homeassistant.components.light import LightEntity, ColorMode
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     DOMAIN, CH_TYPE_DIMMER, CH_TYPE_CTC,
@@ -40,7 +42,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         async_add_entities(entities)
 
 
-class RaylogicModLight(LightEntity):
+class RaylogicModLight(LightEntity, RestoreEntity):
     _attr_has_entity_name = False
     _attr_color_mode = ColorMode.BRIGHTNESS
     _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
@@ -124,6 +126,19 @@ class RaylogicModLight(LightEntity):
             )
         )
 
+        # F1 (v1.7.0): the module never reports its state on its own and
+        # answers no state query, so after an HA restart/reload the last
+        # known state is restored (a real frame that already arrived wins).
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            if self._device.restore_channel(self._ch_num, self._restore_payload(last)):
+                self._on_update(self._ch_num, self._device.channel_states[self._ch_num])
+
+    @staticmethod
+    def _restore_payload(last) -> dict:
+        on = last.state == "on"
+        return {"on": on, "brightness": (last.attributes.get("brightness") or 255) if on else 0}
+
     @callback
     def _on_update(self, ch_num, state):
         if ch_num != self._ch_num:
@@ -139,7 +154,7 @@ class RaylogicModLight(LightEntity):
         self.async_write_ha_state()
 
 
-class RaylogicModCtcLight(LightEntity):
+class RaylogicModCtcLight(LightEntity, RestoreEntity):
     """CTC (tunable-white / colour-temperature) channel.
 
     Supports BOTH sub-modes captured in Model_Number_Mod2u.txt (Area 16):
@@ -251,6 +266,23 @@ class RaylogicModCtcLight(LightEntity):
                 self._on_available,
             )
         )
+
+        # F1 (v1.7.0): the module never reports its state on its own and
+        # answers no state query, so after an HA restart/reload the last
+        # known state is restored (a real frame that already arrived wins).
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            if self._device.restore_channel(self._ch_num, self._restore_payload(last)):
+                self._on_update(self._ch_num, self._device.channel_states[self._ch_num])
+
+    @staticmethod
+    def _restore_payload(last) -> dict:
+        on = last.state == "on"
+        payload = {"on": on, "brightness": (last.attributes.get("brightness") or 255) if on else 0}
+        kelvin = last.attributes.get("color_temp_kelvin")
+        if kelvin:
+            payload["color_temp_kelvin"] = int(kelvin)
+        return payload
 
     @callback
     def _on_update(self, ch_num, state):

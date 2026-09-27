@@ -9,7 +9,9 @@ import logging
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, CH_TYPE_RELAY
 from .protocol import RaylogicModDevice
@@ -44,7 +46,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     device.new_channel_callback = _on_new_channel
 
 
-class RaylogicModSwitch(SwitchEntity):
+class RaylogicModSwitch(SwitchEntity, RestoreEntity):
     _attr_has_entity_name = False
     _attr_entity_registry_enabled_default = True
 
@@ -114,6 +116,18 @@ class RaylogicModSwitch(SwitchEntity):
                 self._on_available,
             )
         )
+
+        # F1 (v1.7.0): the module never reports its state on its own and
+        # answers no state query, so after an HA restart/reload the last
+        # known state is restored (a real frame that already arrived wins).
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            if self._device.restore_channel(self._ch_num, self._restore_payload(last)):
+                self._on_update(self._ch_num, self._device.channel_states[self._ch_num])
+
+    @staticmethod
+    def _restore_payload(last) -> dict:
+        return {"on": last.state == "on"}
 
     @callback
     def _on_update(self, ch_num, state):
