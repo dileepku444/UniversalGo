@@ -323,6 +323,17 @@ class RaylogicModDevice:
         # {cmd: str, at: float} - `at` isliye taaki bahut purana command
         # replay na ho jaaye (dekho PENDING_COMMAND_MAX_AGE).
         self._pending_commands: list[dict] = []
+        # P1 (v1.6.7): "false success" rokne ke liye - har bheje gaye command
+        # ka channel ({full_cmd: ch}), aur us channel ki AAKHRI CONFIRMED state
+        # (command se pehle ki). Module ne command receive kiya (TCP ACK) to
+        # snapshot hata do; command DROP hua (module offline, expire/overflow/
+        # max attempts) to channel wapas isi state par + HA ko update.
+        self._cmd_channel: dict[str, int] = {}
+        self._pre_state: dict[int, dict] = {}
+        # P3 (v1.6.7): ek outage = ek ERROR + ek WARNING, baaki DEBUG; wapas
+        # aane par ek INFO (kitni der offline raha).
+        self._outage_since: Optional[float] = None
+        self._outage_attempts = 0
         self._MAX_PENDING_COMMANDS = 5
         # COMMAND-DELIVERY FIX (v1.5.2): write aur close kabhi ek saath na
         # chalein. Pehle _soft_reconnect/_reconnect ka _close_writer_safe()
@@ -575,6 +586,14 @@ class RaylogicModDevice:
                 self._session_started = now
                 self._last_rx = now
                 await self._cancel_bg_tasks()
+                if self._outage_since is not None:
+                    _LOGGER.info(
+                        "Raylogic %s %s: wapas online - %.0fs offline raha "
+                        "(%d reconnect koshish).", self._model_name, self.ip,
+                        now - self._outage_since, self._outage_attempts,
+                    )
+                    self._outage_since = None
+                    self._outage_attempts = 0
                 if prev_session:
                     _LOGGER.info(
                         "Connected to Raylogic %s at %s (pichhli session %.0fs "
@@ -604,6 +623,9 @@ class RaylogicModDevice:
                         p for p in pending
                         if (now - p["at"]) <= PENDING_COMMAND_MAX_AGE
                     ]
+                    for p in pending:
+                        if (now - p["at"]) > PENDING_COMMAND_MAX_AGE:
+                            self._cmd_dropped(p["cmd"], f"module {PENDING_COMMAND_MAX_AGE}s se zyada offline raha")
                     stale = len(pending) - len(fresh)
                     if stale:
                         _LOGGER.debug(
@@ -674,7 +696,12 @@ class RaylogicModDevice:
                 # exc ka str() kabhi khaali bhi ho sakta hai (jaise bare
                 # ConnectionResetError) - type bhi log karo warna log me
                 # sirf "Failed to connect ...:" dikhta hai, koi wajah nahi.
-                _LOGGER.error(
+                # P3 (v1.6.7): ek outage me sirf pehli failure ERROR, baaki DEBUG
+                first = self._outage_since is None
+                if first:
+                    self._outage_since = self._now()
+                self._outage_attempts += 1
+                (_LOGGER.error if first else _LOGGER.debug)(
                     "Failed to connect to Raylogic %s: %s%s",
                     self.ip, type(exc).__name__,
                     f" - {exc}" if str(exc) else "",
@@ -866,10 +893,18 @@ class RaylogicModDevice:
                     delay = RECONNECT_BACKOFF_STEPS[
                         min(attempt, len(RECONNECT_BACKOFF_STEPS) - 1)
                     ]
-                    _LOGGER.warning(
+                    # P3: disconnect ki wajah pehle hi (read error / send error /
+                    # silence / session) log ho chuki hoti hai - ye retry line
+                    # usi event ka duplicate thi, isliye DEBUG.
+                    _LOGGER.debug(
                         "Raylogic %s %s: connection lost, retrying in %ds",
                         self._model_name, self.ip, delay,
                     )
+                if self._outage_since is None:
+                    self._outage_since = self._now()
+                # P1: offline rehte hue bhi purane queued commands expire +
+                # revert (HA ~30s me sach dikhaye)
+                self._expire_pending()
                 attempt += 1
                 await asyncio.sleep(delay)
                 if self._shutdown:
@@ -1115,6 +1150,46 @@ class RaylogicModDevice:
         self._msg_counter = (self._msg_counter % 999) + 1
         return f"{self._msg_counter:03d}"
 
+    # ---------------- P1 (v1.6.7): confirmed-state tracking ---------------- #
+    def _cmd_delivered(self, cmd: str) -> None:
+        """Module ne command receive kar liya - us channel ka pre-state
+        snapshot tabhi hatao jab us channel ka koi aur command abhi raaste me
+        na ho."""
+        ch = self._cmd_channel.pop(cmd, None)
+        if ch is not None and ch not in self._cmd_channel.values():
+            self._pre_state.pop(ch, None)
+
+    def _cmd_dropped(self, cmd: str, reason: str) -> None:
+        """Command kabhi deliver nahi hoga - "false success" hatao: channel ko
+        aakhri confirmed state par wapas le jao aur HA entity update karo."""
+        ch = self._cmd_channel.pop(cmd, None)
+        if ch is None or ch in self._cmd_channel.values():
+            return
+        prev = self._pre_state.pop(ch, None)
+        if prev is None:
+            return
+        self.channel_states[ch] = dict(prev)
+        _LOGGER.warning(
+            "Raylogic %s %s: channel %d ka command device tak nahi pahuncha "
+            "(%s) - HA me state wapas asli (aakhri confirmed) par kar di, "
+            "'false success' nahi dikhega.", self._model_name, self.ip, ch, reason,
+        )
+        if self.state_callback:
+            self.state_callback(self.ip, ch, self.channel_states[ch])
+
+    def _expire_pending(self) -> None:
+        """Queue me PENDING_COMMAND_MAX_AGE se purane commands drop + revert.
+        Module offline rehte hue bhi chalta hai (reconnect loop se), taaki HA
+        ~30s me hi sach dikhaye, module wapas aane ka intezaar na kare."""
+        now = self._now()
+        keep = []
+        for p in self._pending_commands:
+            if (now - p["at"]) > PENDING_COMMAND_MAX_AGE:
+                self._cmd_dropped(p["cmd"], f"module {PENDING_COMMAND_MAX_AGE}s tak offline raha")
+            else:
+                keep.append(p)
+        self._pending_commands = keep
+
     def _queue_command(self, cmd: str, attempt: int = 0) -> None:
         """Command ko replay-queue me daalo (bounded + timestamped).
 
@@ -1137,7 +1212,8 @@ class RaylogicModDevice:
             {"cmd": cmd, "at": self._now(), "attempt": attempt}
         )
         if len(self._pending_commands) > self._MAX_PENDING_COMMANDS:
-            self._pending_commands.pop(0)
+            old = self._pending_commands.pop(0)
+            self._cmd_dropped(old["cmd"], "queue full")
         if not self._connected and not self._shutdown:
             self._schedule_reconnect()
 
@@ -1159,6 +1235,7 @@ class RaylogicModDevice:
         if self._shutdown:
             return
         if attempt + 1 >= COMMAND_MAX_ATTEMPTS:
+            self._cmd_dropped(cmd, f"{COMMAND_MAX_ATTEMPTS} koshish fail")
             _LOGGER.error(
                 "Raylogic %s %s: command %d koshish ke baad bhi device tak "
                 "nahi pahunch paya - chhod rahe hain: '%s'",
@@ -1221,8 +1298,10 @@ class RaylogicModDevice:
                 return
             pending = self._unacked_bytes(sock)
             if pending is None:
+                self._cmd_delivered(cmd)
                 return  # platform support nahi, verification skip
             if pending == 0:
+                self._cmd_delivered(cmd)
                 _LOGGER.debug(
                     "Raylogic %s: command device tak pahuncha (TCP ACK): %s",
                     self.ip, cmd,
@@ -1356,7 +1435,7 @@ class RaylogicModDevice:
                 self._trigger_on_demand_connect()
             self._schedule_reconnect()
 
-    async def _send_addressed(self, cmd: str):
+    async def _send_addressed(self, cmd: str, ch: Optional[int] = None):
         """CONFIRMED from real Docklight capture (device connected DIRECTLY,
         192.168.1.34:5550): wire traffic ALWAYS carries a "<id>,<seq>,"
         prefix before *AR=/+AR40= - the official PDF's bare "*AR=...\\r"
@@ -1371,8 +1450,15 @@ class RaylogicModDevice:
              client commands (jaise "099,155,*AR=001A040203") ek ALAG id
              use karte hain - wahi CLIENT_SENDER_ID hai.
         """
+        full = f"{CLIENT_SENDER_ID},{self._next_msg()},{cmd}"
+        if ch is not None:
+            # P1: command se PEHLE ki state = aakhri confirmed (agar pehle se
+            # koi undelivered command na ho; warna wahi purana snapshot rahe)
+            if ch not in self._pre_state:
+                self._pre_state[ch] = dict(self.channel_states.get(ch, {}))
+            self._cmd_channel[full] = ch
         await self._send_raw(
-            f"{CLIENT_SENDER_ID},{self._next_msg()},{cmd}",
+            full,
             queue_on_disconnect=True,
             # v1.5.2: ye ek REAL user command hai (entity click / scene) -
             # iski delivery TCP-ACK se confirm karo, aur na pahunchne par
@@ -1721,7 +1807,7 @@ class RaylogicModDevice:
             return
         level = RELAY_LEVEL_ON if on else RELAY_LEVEL_OFF
         cmd_hex = f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}{level}{ch_num:02X}"
-        await self._send_addressed(f"*AR={cmd_hex}")
+        await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
         self.channel_states.setdefault(ch_num, {}).update({"on": on})
         if self.state_callback:
             self.state_callback(self.ip, ch_num, self.channel_states[ch_num])
@@ -1766,7 +1852,7 @@ class RaylogicModDevice:
             # warna sabse dim "on" brightness galti se OFF command ban jaata.
             level = max(DIMMER_LEVEL_ON, min(254, 256 - brightness))
         cmd_hex = f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}{level:02X}{ch_num:02X}"
-        await self._send_addressed(f"*AR={cmd_hex}")
+        await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
         self.channel_states.setdefault(ch_num, {}).update(
             {"on": bool(brightness), "brightness": brightness or 0}
         )
@@ -1862,7 +1948,7 @@ class RaylogicModDevice:
                     f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}"
                     f"{level:02X}{brightness_channel:02X}"
                 )
-                await self._send_addressed(f"*AR={cmd_hex}")
+                await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
             if color_temp_kelvin is not None:
                 eff_kelvin = color_temp_kelvin
                 level = self._kelvin_to_single_ct_level(color_temp_kelvin)
@@ -1870,7 +1956,7 @@ class RaylogicModDevice:
                     f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}"
                     f"{level:02X}{ct_channel:02X}"
                 )
-                await self._send_addressed(f"*AR={cmd_hex}")
+                await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
 
         self.channel_states.setdefault(ch_num, {}).update({
             "on": bool(eff_brightness),
@@ -1923,7 +2009,7 @@ class RaylogicModDevice:
             self.ip, ch_num, cool_channel, cool_level, warm_channel,
             warm_level, pct, area, cmd_hex,
         )
-        await self._send_addressed(f"*AZ={cmd_hex}")
+        await self._send_addressed(f"*AZ={cmd_hex}", ch=ch_num)
 
     def _kelvin_to_single_ct_level(self, kelvin: int) -> int:
         kelvin = max(CTC_MIN_KELVIN, min(CTC_MAX_KELVIN, kelvin))
@@ -2095,7 +2181,7 @@ class RaylogicModDevice:
         step = min(FAN_SPEEDS.keys(), key=lambda k: abs(k - percentage))
         level = FAN_SPEEDS[step]
         cmd_hex = f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}{level:02X}{ch_num:02X}"
-        await self._send_addressed(f"*AR={cmd_hex}")
+        await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
         self.channel_states.setdefault(ch_num, {}).update(
             {"on": step > 0, "percentage": step}
         )
@@ -2136,7 +2222,7 @@ class RaylogicModDevice:
             self._model_name, self.ip, action, ch_num, pair_index + 1,
             pair_lo, pair_lo + 1, slot, slot, self._connected, cmd_hex,
         )
-        await self._send_addressed(f"*AR={cmd_hex}")
+        await self._send_addressed(f"*AR={cmd_hex}", ch=ch_num)
         if action != "stop":
             self.channel_states.setdefault(ch_num, {}).update(
                 {"on": action == "open", "moving": True}

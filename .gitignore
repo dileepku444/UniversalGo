@@ -8,3 +8,6 @@ custom_components/raylogic_mod/device_state/
 # OS / editor junk
 .DS_Store
 Thumbs.db
+
+# Brand logo (icon.png / icon@2x.png) stays local only - never published
+custom_components/raylogic_mod/brand/

@@ -1,5 +1,7 @@
 # Raylogic MOD2U / MOD4U / MOD2F - Home Assistant Integration
 
+> **Unofficial community integration** - not affiliated with or endorsed by Raylogic Control Systems Pvt. Ltd. 'Raylogic' and its logo are trademarks of their owner.
+
 Ek hi integration, teeno devices ke liye:
 
 - **MOD2U** - 2 physical channels, 1 pair, universal type (Relay/Dimmer/Fan/Curtain/CTC)

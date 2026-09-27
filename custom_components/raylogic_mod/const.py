@@ -28,7 +28,7 @@ DOMAIN = "raylogic_mod"
 # Network -------------------------------------------------------------- #
 DEFAULT_PORT = 5550
 CONNECT_TIMEOUT = 5
-RECONNECT_DELAY = 30
+RECONNECT_DELAY = 5   # v1.6.7 (P2): 30 -> 5, module wapas aate hi jaldi jud jao
 
 # STABILITY FIX (webpage/entities "Unavailable" flicker): pehle har
 # disconnect (chahe 2-second ka chhota blip ho, jaise device ka apna
@@ -50,7 +50,7 @@ RECONNECT_DELAY = 30
 # chhote blips mein hota hai), UI mein kabhi flicker hi nahi dikhega.
 # Sirf agar itni der tak connect() wapas safal nahi hota, tab hi entity
 # "Unavailable" dikhegi - matlab lagatar/genuine outage ke liye hi.
-RECONNECT_BACKOFF_STEPS = (1, 2, 4, 8, 15, RECONNECT_DELAY)
+RECONNECT_BACKOFF_STEPS = (1, 2, 4, RECONNECT_DELAY)
 UNAVAILABLE_GRACE_SECONDS = 45
 
 # BUG FIX: writer.close() + wait_closed() ke liye pehle koi upper-bound
