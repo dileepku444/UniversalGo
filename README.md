@@ -4,12 +4,12 @@
 
 A single integration for all three devices:
 
-- **MOD2U** - 2 physical channels, 1 pair, universal type (Relay/Dimmer/Fan/Curtain/CTC)
-- **MOD4U** - 4 physical channels, 2 pairs, universal type (Relay/Dimmer/Fan/Curtain/CTC)
+- **MOD2U** - 2 physical channels, 1 pair, universal type (Relay/Dimmer/Fan/Curtain/CCT)
+- **MOD4U** - 4 physical channels, 2 pairs, universal type (Relay/Dimmer/Fan/Curtain/CCT)
 - **MOD2F** - 1 physical channel, **fixed Fan type** (no Select Type option -
   the device is always a Fan; the config only asks for Area + channel number)
 
-RE8-style config-flow architecture (Relay / Dimmer / Fan / Curtain / CTC
+RE8-style config-flow architecture (Relay / Dimmer / Fan / Curtain / CCT
 per channel, Fan only for the MOD2F). When adding a device, choose MOD2U,
 MOD4U or MOD2F from the "Device Model" dropdown - the rest of the config
 screen then shows only as many channel fields as that model has (MOD2U = 2,
@@ -21,8 +21,8 @@ Channels come in **PAIRS**:
 - **Pair 2** = Channel 3 + Channel 4 (MOD4U only)
 
 Relay, Dimmer and Fan can be set **independently** on every channel.
-Curtain and CTC (colour temperature) are both **paired** modes - when one
-channel of a pair is set to Curtain or CTC, the whole pair (both physical
+Curtain and CCT (colour temperature) are both **paired** modes - when one
+channel of a pair is set to Curtain or CCT, the whole pair (both physical
 channels) is consumed internally by a single logical entity (no 2 separate
 entities are created).
 
@@ -34,18 +34,18 @@ entities are created).
 4. Step 1: IP Address, Port (default 5550) and **Device Model** (MOD2U/MOD4U/MOD2F).
 5. Step 2 (MOD2U/MOD4U):
    - **Area** - the Area shown on the device's Mod Settings screen (e.g.
-     12, or 16 for a CTC pair). Only use `0` when ALL channels are Relay -
+     12, or 16 for a CCT pair). Only use `0` when ALL channels are Relay -
      HA learns the Area by itself the first time a channel is toggled from
-     the app/switch. Dimmer/Fan/Curtain/CTC require the Area to be entered
+     the app/switch. Dimmer/Fan/Curtain/CCT require the Area to be entered
      manually.
    - **Channel 1-N Type** - what you set on the "Select Type" screen of
-     the Raylogic GO app: `relay`, `dimmer`, `fan`, `curtain` or `ctc`.
+     the Raylogic GO app: `relay`, `dimmer`, `fan`, `curtain` or `cct`.
      The device does not report its own type, so it has to be entered here
      once.
-   - **CTC / Curtain (paired types)**: setting Channel 1 (or 3) Type to
-     `ctc`/`curtain` makes the Channel 2 (or 4) Type field of that pair
+   - **CCT / Curtain (paired types)**: setting Channel 1 (or 3) Type to
+     `cct`/`curtain` makes the Channel 2 (or 4) Type field of that pair
      automatically ignored - a single entity is created, not two
-     conflicting ones. For CTC, also select the Driver Mode (Single/Double,
+     conflicting ones. For CCT, also select the Driver Mode (Single/Double,
      as shown on the app's Mod Settings screen) - independently per pair.
 5. Step 2 (MOD2F): only 2 fields - **Area** (as shown in the device app,
    e.g. 4) and **First Channel Number** (the same as the device app's
@@ -63,12 +63,12 @@ entities are created).
    came back up and kept answering pings. `_reconnect()` is now a proper
    loop - as soon as the device is reachable again (on the next 30 s retry
    cycle) it reconnects automatically, with no need to restart/reload HA.
-2. **CTC pair-derivation bug** (MOD4U): a CTC channel's pair was always
+2. **CCT pair-derivation bug** (MOD4U): a CCT channel's pair was always
    assumed to be `(channel_start, channel_start+1)` - fine on the MOD2U
-   (only one pair), but because of this the CTC on the MOD4U's 2nd pair
-   (Channel 3-4) used the wrong physical channels. Each CTC entity now
+   (only one pair), but because of this the CCT on the MOD4U's 2nd pair
+   (Channel 3-4) used the wrong physical channels. Each CCT entity now
    derives its own pair.
-3. **CTC same-Area disambiguation** (MOD4U): if 2 Single-Driver CTC pairs
+3. **CCT same-Area disambiguation** (MOD4U): if 2 Single-Driver CCT pairs
    are configured in the same Area, incoming frames are now matched to the
    correct pair (by the real channel number on the wire) instead of simply
    returning the first match.
@@ -135,7 +135,7 @@ only) - the config flow blocks this combination by itself.
 If the Area is left at `0` and the channel is a Relay, HA passively listens
 for `*AR=` frames (when you toggle from the app/a physical switch), learns
 the Area and creates the entity immediately (no restart needed). This does
-NOT work for Dimmer/Fan/Curtain/CTC - they require the Area to be entered
+NOT work for Dimmer/Fan/Curtain/CCT - they require the Area to be entered
 manually.
 
 ## Repairs

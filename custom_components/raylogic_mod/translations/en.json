@@ -34,7 +34,7 @@
       },
       "channels": {
         "title": "Configure channels",
-        "description": "Enter the Area shown on the Mod Settings screen (e.g. 12 or 16). Area = 0 only works when all channels are 'relay' (HA learns them by itself after each one is toggled once from the app/switch) - Dimmer/Fan/Curtain/CTC require the Area to be entered manually. Channels come in 2 PAIRS: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) (only Pair 1 exists on the MOD2U). CTC (colour-temperature light) and Curtain BOTH use both physical channels of their pair internally - if Channel 1 Type = 'ctc' or 'curtain' is chosen, the Channel 2 Type field is automatically ignored (a single entity is created), and the same applies to Channel 3/4. When choosing CTC, also select its Driver Mode - 'single' ('Single Driver' checked in the app) or 'double'.",
+        "description": "Enter the Area shown on the Mod Settings screen (e.g. 12 or 16). Area = 0 only works when all channels are 'relay' (HA learns them by itself after each one is toggled once from the app/switch) - Dimmer/Fan/Curtain/CCT require the Area to be entered manually. Channels come in 2 PAIRS: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) (only Pair 1 exists on the MOD2U). CCT (colour-temperature light) and Curtain BOTH use both physical channels of their pair internally - if Channel 1 Type = 'cct' or 'curtain' is chosen, the Channel 2 Type field is automatically ignored (a single entity is created), and the same applies to Channel 3/4. When choosing CCT, also select its Driver Mode - 'single' ('Single Driver' checked in the app) or 'double'.",
         "data": {
           "legacy_area": "Area (0 = relay-only auto-learn, 1-16 = manual)",
           "channel_start": "First Channel Number (usually 1, but check Raylogic GO app if channels don't start at 1)",
@@ -42,21 +42,21 @@
           "channel_2_type": "Channel 2 Type (Pair 1)",
           "channel_3_type": "Channel 3 Type (Pair 2)",
           "channel_4_type": "Channel 4 Type (Pair 2)",
-          "channel_1_ctc_mode": "Channel 1 CTC Driver Mode (only if Channel 1 Type = ctc)",
-          "channel_2_ctc_mode": "Channel 2 CTC Driver Mode (only if Channel 2 Type = ctc)",
-          "channel_3_ctc_mode": "Channel 3 CTC Driver Mode (only if Channel 3 Type = ctc)",
-          "channel_4_ctc_mode": "Channel 4 CTC Driver Mode (only if Channel 4 Type = ctc)"
+          "channel_1_cct_mode": "Channel 1 CCT Driver Mode (only if Channel 1 Type = cct)",
+          "channel_2_cct_mode": "Channel 2 CCT Driver Mode (only if Channel 2 Type = cct)",
+          "channel_3_cct_mode": "Channel 3 CCT Driver Mode (only if Channel 3 Type = cct)",
+          "channel_4_cct_mode": "Channel 4 CCT Driver Mode (only if Channel 4 Type = cct)"
         }
       },
       "discovery_confirm": {
         "title": "New Raylogic MOD module found",
-        "description": "{name}\n\nAdd this module to Home Assistant? Model, Area and First Channel will be pre-filled in the next form - just review the channel types (relay/dimmer/fan/curtain/ctc) and submit."
+        "description": "{name}\n\nAdd this module to Home Assistant? Model, Area and First Channel will be pre-filled in the next form - just review the channel types (relay/dimmer/fan/curtain/cct) and submit."
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to device. Check IP address and ensure device is powered on.",
       "unknown": "Unexpected error. Check logs for details.",
-      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC channels require the Area (not 0) to be entered manually - auto-learn only works for Relay.",
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CCT channels require the Area (not 0) to be entered manually - auto-learn only works for Relay.",
       "bad_subnet": "Enter one or more valid IPv4 subnets in CIDR form, e.g. 192.168.1.0/24 (max /22).",
       "no_devices_found": "No new Raylogic module was found on port 5550. Check that it is powered on and on this network (modules that are already added are not listed).",
       "host_in_other_integration": "This IP is already added in the 'raylogic' (main/DIN) integration. Do not add the same module to both integrations - two TCP connections to one device conflict with each other."
@@ -71,7 +71,7 @@
     "step": {
       "init": {
         "title": "Configure Raylogic device",
-        "description": "Change the channel type (relay/dimmer/fan/curtain/ctc), Area or channel numbering here - there is no need to delete the device. The Device Model cannot be changed here - to change the model, delete the device and add it again. Remember: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) - Curtain/CTC consume both channels of a pair. Area scenes: the Raylogic GO app's area scenes in the format 'area:scene,scene; area:scene' (e.g. '12:1,2,3; 5:1,4') - entering them on any ONE device is enough; scene entities + a scene dropdown are created for each area. Empty = no scenes.",
+        "description": "Change the channel type (relay/dimmer/fan/curtain/cct), Area or channel numbering here - there is no need to delete the device. The Device Model cannot be changed here - to change the model, delete the device and add it again. Remember: Pair 1 = Channel 1(+2), Pair 2 = Channel 3(+4) - Curtain/CCT consume both channels of a pair. Area scenes: the Raylogic GO app's area scenes in the format 'area:scene,scene; area:scene' (e.g. '12:1,2,3; 5:1,4') - entering them on any ONE device is enough; scene entities + a scene dropdown are created for each area. Empty = no scenes.",
         "data": {
           "host": "Device IP Address",
           "port": "Port (default 5550)",
@@ -81,17 +81,17 @@
           "channel_2_type": "Channel 2 type (Pair 1)",
           "channel_3_type": "Channel 3 type (Pair 2)",
           "channel_4_type": "Channel 4 type (Pair 2)",
-          "channel_1_ctc_mode": "Channel 1 CTC Driver Mode",
-          "channel_2_ctc_mode": "Channel 2 CTC Driver Mode",
-          "channel_3_ctc_mode": "Channel 3 CTC Driver Mode",
-          "channel_4_ctc_mode": "Channel 4 CTC Driver Mode",
+          "channel_1_cct_mode": "Channel 1 CCT Driver Mode",
+          "channel_2_cct_mode": "Channel 2 CCT Driver Mode",
+          "channel_3_cct_mode": "Channel 3 CCT Driver Mode",
+          "channel_4_cct_mode": "Channel 4 CCT Driver Mode",
           "scene_counts": "Area scenes (e.g. 12:1,2,3; 5:1,4)",
           "auto_discovery": "Auto-discover new modules (background LAN scan every 30 min, whole integration)"
         }
       }
     },
     "error": {
-      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CTC require the Area to be entered manually (0 only works for Relay LEARN mode).",
+      "area_required_for_non_relay": "Dimmer/Fan/Curtain/CCT require the Area to be entered manually (0 only works for Relay LEARN mode).",
       "bad_scene_map": "Could not parse the area scenes - the format is 'area:scene,scene; area:scene' (area 1-16, scene 1-64), e.g. '12:1,2,3; 5:1,4'.",
       "host_in_other_integration": "This IP is already added in the 'raylogic' (main/DIN) integration - the MOD entry cannot point to that module (two TCP connections to one device conflict with each other)."
     }

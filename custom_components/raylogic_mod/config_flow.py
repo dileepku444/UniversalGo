@@ -14,7 +14,7 @@ from homeassistant.helpers import selector
 from .const import (
     DEFAULT_PORT, DOMAIN, AREA_MAX, LEGACY_DEFAULT_AREA, CLOSE_TIMEOUT,
     DEVICE_MODELS, DEFAULT_MODEL, MODEL_MOD2U, MODEL_MOD4U, MODEL_MOD2F,
-    CONF_SCENE_COUNTS, parse_scene_map, CONF_AUTO_DISCOVERY,
+    CONF_SCENE_COUNTS, parse_scene_map, CONF_AUTO_DISCOVERY, normalize_legacy_cct,
 )
 from . import discovery
 
@@ -27,29 +27,29 @@ CONF_CH1_TYPE = "channel_1_type"
 CONF_CH2_TYPE = "channel_2_type"
 CONF_CH3_TYPE = "channel_3_type"
 CONF_CH4_TYPE = "channel_4_type"
-CONF_CH1_CTC_MODE = "channel_1_ctc_mode"
-CONF_CH2_CTC_MODE = "channel_2_ctc_mode"
-CONF_CH3_CTC_MODE = "channel_3_ctc_mode"
-CONF_CH4_CTC_MODE = "channel_4_ctc_mode"
+CONF_CH1_CCT_MODE = "channel_1_cct_mode"
+CONF_CH2_CCT_MODE = "channel_2_cct_mode"
+CONF_CH3_CCT_MODE = "channel_3_cct_mode"
+CONF_CH4_CCT_MODE = "channel_4_cct_mode"
 
 _ALL_CH_TYPE_KEYS = (CONF_CH1_TYPE, CONF_CH2_TYPE, CONF_CH3_TYPE, CONF_CH4_TYPE)
-_ALL_CH_CTC_MODE_KEYS = (CONF_CH1_CTC_MODE, CONF_CH2_CTC_MODE, CONF_CH3_CTC_MODE, CONF_CH4_CTC_MODE)
+_ALL_CH_CCT_MODE_KEYS = (CONF_CH1_CCT_MODE, CONF_CH2_CCT_MODE, CONF_CH3_CCT_MODE, CONF_CH4_CCT_MODE)
 
 # MOD2U/MOD4U do not broadcast their own channel type (no readback like
 # the RE8's BR40 has been confirmed) - the type is only set from the
 # Raylogic GO app. So instead of auto-detection, enter here the type chosen
 # in the app (Select Type screen). The confirmed *AR=/*AZ= formats for
-# relay/dimmer/fan/curtain/ctc are all implemented.
-CHANNEL_TYPE_OPTIONS = ["relay", "dimmer", "fan", "curtain", "ctc"]
+# relay/dimmer/fan/curtain/cct are all implemented.
+CHANNEL_TYPE_OPTIONS = ["relay", "dimmer", "fan", "curtain", "cct"]
 
-# The CTC Single/Double Driver checkbox (Mod Settings screen) decides which
+# The CCT Single/Double Driver checkbox (Mod Settings screen) decides which
 # wire format is used (*AR= sub-channel vs *AZ= combined), so it must be
-# entered here too. One logical CTC entity internally uses BOTH physical
-# channels of its pair, so enter the CTC mode on whichever channel you set
-# to 'ctc'; the Type field of the other channel of that pair is then
-# ignored (only one CTC entity is created). Curtain is PAIRED as well (same
+# entered here too. One logical CCT entity internally uses BOTH physical
+# channels of its pair, so enter the CCT mode on whichever channel you set
+# to 'cct'; the Type field of the other channel of that pair is then
+# ignored (only one CCT entity is created). Curtain is PAIRED as well (same
 # rule) but has no driver mode.
-CTC_MODE_OPTIONS = ["single", "double"]
+CCT_MODE_OPTIONS = ["single", "double"]
 
 DEVICE_MODEL_OPTIONS = [MODEL_MOD2U, MODEL_MOD4U, MODEL_MOD2F]
 
@@ -78,7 +78,7 @@ def _pair_count(model: str) -> int:
 
 
 def _channels_schema_fields(model: str, current: dict | None = None) -> dict:
-    """Show only as many channel type/CTC-mode fields as the model's
+    """Show only as many channel type/CCT-mode fields as the model's
     channel_count (2 or 4) - 2 on a MOD2U, 4 on a MOD4U. fixed_type models
     (MOD2F) get no fields at all (the channel type is fixed, the user does
     not need to choose it)."""
@@ -90,7 +90,7 @@ def _channels_schema_fields(model: str, current: dict | None = None) -> dict:
     fields: dict = {}
     for i in range(channel_count):
         type_key = _ALL_CH_TYPE_KEYS[i]
-        ctc_key = _ALL_CH_CTC_MODE_KEYS[i]
+        cct_key = _ALL_CH_CCT_MODE_KEYS[i]
         pair_no = (i // 2) + 1
         fields[
             vol.Optional(type_key, default=current.get(type_key, "relay"))
@@ -98,9 +98,9 @@ def _channels_schema_fields(model: str, current: dict | None = None) -> dict:
             selector.SelectSelectorConfig(options=CHANNEL_TYPE_OPTIONS)
         )
         fields[
-            vol.Optional(ctc_key, default=current.get(ctc_key, "single"))
+            vol.Optional(cct_key, default=current.get(cct_key, "single"))
         ] = selector.SelectSelector(
-            selector.SelectSelectorConfig(options=CTC_MODE_OPTIONS)
+            selector.SelectSelectorConfig(options=CCT_MODE_OPTIONS)
         )
     return fields
 
@@ -149,6 +149,8 @@ async def validate_connection(hass, host: str, port: int) -> dict:
 
 class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    # v1.7.1: 1.2 = "ctc" renamed to "cct" (see async_migrate_entry)
+    MINOR_VERSION = 2
 
     def __init__(self):
         self._data: dict[str, Any] = {}
@@ -342,7 +344,7 @@ class RaylogicModConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ch_types = tuple(
                 user_input.get(_ALL_CH_TYPE_KEYS[i], _default_channel_type(model)) for i in range(channel_count)
             )
-            # The "type" of a Dimmer/Fan/Curtain/CTC channel cannot be derived
+            # The "type" of a Dimmer/Fan/Curtain/CCT channel cannot be derived
             # from an *AR= echo, so the Area must be entered manually for them.
             if user_input[CONF_LEGACY_AREA] == 0 and any(t != "relay" for t in ch_types):
                 errors["base"] = "area_required_for_non_relay"
@@ -395,7 +397,7 @@ class RaylogicModOptionsFlow(config_entries.OptionsFlow):
     # now used.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        current = {**self.config_entry.data, **self.config_entry.options}
+        current = normalize_legacy_cct({**self.config_entry.data, **self.config_entry.options})
         model = current.get(CONF_DEVICE_MODEL, DEFAULT_MODEL)
         channel_count = DEVICE_MODELS.get(model, DEVICE_MODELS[DEFAULT_MODEL])["channel_count"]
 

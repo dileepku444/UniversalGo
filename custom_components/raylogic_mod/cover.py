@@ -1,7 +1,7 @@
 """Raylogic MOD2U / MOD4U curtain platform.
 
 A curtain uses a different frame shape (command 0x27/0x26 instead of 0x1A)
-and, like CTC, is a PAIRED mode: when one channel of a pair is configured as
+and, like CCT, is a PAIRED mode: when one channel of a pair is configured as
 a curtain, the whole pair becomes a single logical curtain entity.
 
 The curtain wire frame is now DERIVED entirely from the channel number
@@ -11,9 +11,9 @@ so curtains only worked on the one device that had been captured. Now an
 entity is created for every curtain channel, whatever Area (1-16) the
 device is in.
 
-CTC (single/double driver CCT) is supported, but as a `light` entity
-(colour temperature control) - see light.py, RaylogicModCtcLight. It is
-referenced here only so that a CTC-type channel never accidentally gets an
+CCT (single/double driver CCT) is supported, but as a `light` entity
+(colour temperature control) - see light.py, RaylogicModCctLight. It is
+referenced here only so that a CCT-type channel never accidentally gets an
 additional cover entity.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, CH_TYPE_CURTAIN, CH_TYPE_CTC
+from .const import DOMAIN, CH_TYPE_CURTAIN, CH_TYPE_CCT
 from .protocol import RaylogicModDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,11 +54,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 device.curtain_frame(ch_num, "open"),
             )
             entities.append(RaylogicModCover(hass, entry, device, ch_num, state))
-        elif state.get("type") == CH_TYPE_CTC:
+        elif state.get("type") == CH_TYPE_CCT:
             _LOGGER.debug(
-                "Raylogic %s %s: channel %d is of type CTC - no entity is "
+                "Raylogic %s %s: channel %d is of type CCT - no entity is "
                 "created on this (cover) platform; see the 'light' platform "
-                "(RaylogicModCtcLight).", device.model_name, device.ip, ch_num,
+                "(RaylogicModCctLight).", device.model_name, device.ip, ch_num,
             )
     if entities:
         _LOGGER.info(

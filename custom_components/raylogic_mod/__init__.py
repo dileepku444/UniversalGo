@@ -3,8 +3,8 @@
 A single integration (domain: raylogic_mod) supports both devices - choose
 MOD2U (2 channels, 1 pair) or MOD4U (4 channels, 2 pairs) from the "Device
 Model" dropdown in the config flow. Relay/Dimmer/Fan can be set per channel
-independently, but Curtain and CTC are both PAIRED modes: when one channel
-of a pair is set to Curtain or CTC, the whole pair (both physical channels)
+independently, but Curtain and CCT are both PAIRED modes: when one channel
+of a pair is set to Curtain or CCT, the whole pair (both physical channels)
 is consumed by a single logical entity."""
 from __future__ import annotations
 import asyncio
@@ -52,8 +52,8 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from .const import (
     DEFAULT_PORT, DOMAIN, PLATFORMS,
     LEGACY_DEFAULT_AREA,
-    CH_TYPE_CTC, CH_TYPE_CURTAIN, CH_TYPE_RELAY, CH_TYPE_DIMMER, CH_TYPE_FAN,
-    CTC_MODE_SINGLE,
+    CH_TYPE_CCT, CH_TYPE_CURTAIN, CH_TYPE_RELAY, CH_TYPE_DIMMER, CH_TYPE_FAN,
+    CCT_MODE_SINGLE, LEGACY_CCT_UID_SUFFIX, normalize_legacy_cct,
     DEVICE_MODELS, DEFAULT_MODEL,
     CONF_SCENE_COUNTS, SCENE_AREAS, SCENE_MAX, SCENE_DATA_KEY,
     AUTO_SCAN_FIRST_DELAY, AUTO_SCAN_INTERVAL, AUTO_SCAN_MAX_SUBNETS, CONF_AUTO_DISCOVERY,
@@ -81,15 +81,15 @@ CONF_CH1_TYPE = "channel_1_type"
 CONF_CH2_TYPE = "channel_2_type"
 CONF_CH3_TYPE = "channel_3_type"
 CONF_CH4_TYPE = "channel_4_type"
-CONF_CH1_CTC_MODE = "channel_1_ctc_mode"
-CONF_CH2_CTC_MODE = "channel_2_ctc_mode"
-CONF_CH3_CTC_MODE = "channel_3_ctc_mode"
-CONF_CH4_CTC_MODE = "channel_4_ctc_mode"
+CONF_CH1_CCT_MODE = "channel_1_cct_mode"
+CONF_CH2_CCT_MODE = "channel_2_cct_mode"
+CONF_CH3_CCT_MODE = "channel_3_cct_mode"
+CONF_CH4_CCT_MODE = "channel_4_cct_mode"
 
-# Pair layout: (type_conf_key_lo, type_conf_key_hi, ctc_mode_key_lo, ctc_mode_key_hi)
+# Pair layout: (type_conf_key_lo, type_conf_key_hi, cct_mode_key_lo, cct_mode_key_hi)
 _PAIR_CONF_KEYS = (
-    (CONF_CH1_TYPE, CONF_CH2_TYPE, CONF_CH1_CTC_MODE, CONF_CH2_CTC_MODE),
-    (CONF_CH3_TYPE, CONF_CH4_TYPE, CONF_CH3_CTC_MODE, CONF_CH4_CTC_MODE),
+    (CONF_CH1_TYPE, CONF_CH2_TYPE, CONF_CH1_CCT_MODE, CONF_CH2_CCT_MODE),
+    (CONF_CH3_TYPE, CONF_CH4_TYPE, CONF_CH3_CCT_MODE, CONF_CH4_CCT_MODE),
 )
 
 
@@ -97,17 +97,17 @@ def _resolve_channel_types(
     conf: dict, channel_start: int, channel_count: int, fixed_type: str | None = None,
 ) -> tuple[dict[int, str], dict[int, str]]:
     """Resolve the config (channel_1_type..channel_N_type) into the physical
-    channel_types / channel_ctc_modes dicts. Only pairs up to this model's
+    channel_types / channel_cct_modes dicts. Only pairs up to this model's
     `channel_count` (MOD2U=2, MOD4U=4) are processed; anything beyond that
     (e.g. channel_3/4_type accidentally saved on a MOD2U, such as data left
     over after changing the model) is ignored.
 
     For each pair (lo, hi):
-      - if lo's type is 'ctc' or 'curtain' -> only the lo entry is created
+      - if lo's type is 'cct' or 'curtain' -> only the lo entry is created
         (paired entity) and hi is IGNORED (it gets no entity of its own -
         otherwise two separate entities would conflict on the same physical
         hardware).
-      - else if hi's type is 'ctc' or 'curtain' -> only the hi entry
+      - else if hi's type is 'cct' or 'curtain' -> only the hi entry
         (same reason, symmetric case).
       - otherwise (both normal: relay/dimmer/fan) -> each channel gets its
         own entity independently.
@@ -117,7 +117,7 @@ def _resolve_channel_types(
     single channel would create a phantom "channel_start+1" that does not
     physically exist). This is therefore a simple, separate branch: every
     physical channel from channel_start up to channel_count gets the fixed
-    type, with no CTC mode (a fan does not need one).
+    type, with no CCT mode (a fan does not need one).
     """
     if fixed_type:
         channel_types = {
@@ -126,10 +126,10 @@ def _resolve_channel_types(
         return channel_types, {}
 
     channel_types: dict[int, str] = {}
-    channel_ctc_modes: dict[int, str] = {}
+    channel_cct_modes: dict[int, str] = {}
     pair_count = max(1, channel_count // 2)
 
-    for pair_index, (lo_key, hi_key, lo_ctc_key, hi_ctc_key) in enumerate(_PAIR_CONF_KEYS):
+    for pair_index, (lo_key, hi_key, lo_cct_key, hi_cct_key) in enumerate(_PAIR_CONF_KEYS):
         if pair_index >= pair_count:
             break
         phys_lo = channel_start + pair_index * 2
@@ -137,19 +137,19 @@ def _resolve_channel_types(
         type_lo = conf.get(lo_key, CH_TYPE_RELAY)
         type_hi = conf.get(hi_key, CH_TYPE_RELAY)
 
-        if type_lo in (CH_TYPE_CTC, CH_TYPE_CURTAIN):
+        if type_lo in (CH_TYPE_CCT, CH_TYPE_CURTAIN):
             channel_types[phys_lo] = type_lo
-            if type_lo == CH_TYPE_CTC:
-                channel_ctc_modes[phys_lo] = conf.get(lo_ctc_key, CTC_MODE_SINGLE)
-        elif type_hi in (CH_TYPE_CTC, CH_TYPE_CURTAIN):
+            if type_lo == CH_TYPE_CCT:
+                channel_cct_modes[phys_lo] = conf.get(lo_cct_key, CCT_MODE_SINGLE)
+        elif type_hi in (CH_TYPE_CCT, CH_TYPE_CURTAIN):
             channel_types[phys_hi] = type_hi
-            if type_hi == CH_TYPE_CTC:
-                channel_ctc_modes[phys_hi] = conf.get(hi_ctc_key, CTC_MODE_SINGLE)
+            if type_hi == CH_TYPE_CCT:
+                channel_cct_modes[phys_hi] = conf.get(hi_cct_key, CCT_MODE_SINGLE)
         else:
             channel_types[phys_lo] = type_lo
             channel_types[phys_hi] = type_hi
 
-    return channel_types, channel_ctc_modes
+    return channel_types, channel_cct_modes
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -330,11 +330,30 @@ async def async_recall_area_scene(hass: HomeAssistant, area: int, scene: int) ->
     return len(devs)
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """v1.7.1: config entry 1.1 -> 1.2 - the old "ctc" spellings in data and
+    options become "cct". Runs once, before async_setup_entry."""
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        hass.config_entries.async_update_entry(
+            entry,
+            data=normalize_legacy_cct(dict(entry.data)),
+            options=normalize_legacy_cct(dict(entry.options)),
+            minor_version=2,
+        )
+        _LOGGER.info(
+            "Raylogic MOD: config entry '%s' migrated to 1.2 (CTC -> CCT)",
+            entry.title,
+        )
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # options (from the "Configure" button) take priority over data (from
     # the initial add), so a changed channel type takes effect immediately
     # without deleting and re-adding the device.
-    conf = {**entry.data, **entry.options}
+    conf = normalize_legacy_cct({**entry.data, **entry.options})
 
     host = conf[CONF_HOST]
     port = conf.get(CONF_PORT, DEFAULT_PORT)
@@ -361,10 +380,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # In many installations channel numbering does not start at 1 (it is
     # assigned globally within the Area) - this device's first channel number.
     channel_start = conf.get(CONF_CHANNEL_START, 1)
-    # The type set in the Raylogic GO app (relay/dimmer/fan/curtain/ctc) -
+    # The type set in the Raylogic GO app (relay/dimmer/fan/curtain/cct) -
     # keys are now the actual physical channel numbers (starting at
     # channel_start), resolved up to the model's channel_count.
-    channel_types, channel_ctc_modes = _resolve_channel_types(
+    channel_types, channel_cct_modes = _resolve_channel_types(
         conf, channel_start, channel_count, fixed_type=model_info.get("fixed_type"),
     )
 
@@ -375,7 +394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         legacy_channel_count=channel_count,
         channel_start=channel_start,
         channel_types=channel_types,
-        channel_ctc_modes=channel_ctc_modes,
+        channel_cct_modes=channel_cct_modes,
         state_callback=lambda ip, ch, state: _handle_state_update(
             hass, entry.entry_id, ip, ch, state
         ),
@@ -417,7 +436,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # D1 / D2 (v1.6.3): entity registry hygiene
 # ---------------------------------------------------------------------- #
 _OLD_UID_RE = re.compile(
-    r"^(?P<base>.+)_(?P<model>mod2u|mod4u|mod2f)_ch(?P<rest>\d+(?:_ctc)?)$"
+    r"^(?P<base>.+)_(?P<model>mod2u|mod4u|mod2f)_ch(?P<num>\d+)(?P<cct>_cct|_ctc)?$"
 )
 _SCENE_DEVICE_ID = "area_scenes"
 
@@ -425,7 +444,7 @@ _SCENE_DEVICE_ID = "area_scenes"
 _TYPE_TO_ENTITY = {
     CH_TYPE_RELAY: ("switch", ""),
     CH_TYPE_DIMMER: ("light", ""),
-    CH_TYPE_CTC: ("light", "_ctc"),
+    CH_TYPE_CCT: ("light", "_cct"),
     CH_TYPE_FAN: ("fan", ""),
     CH_TYPE_CURTAIN: ("cover", ""),
 }
@@ -461,7 +480,10 @@ def _async_migrate_ids(hass: HomeAssistant, entry: ConfigEntry, stable: str) -> 
         m = _OLD_UID_RE.match(ent.unique_id)
         if not m:
             continue
-        new_uid = f"{stable}_{m['model']}_ch{m['rest']}"
+        # v1.7.1: an old "_ctc" suffix becomes "_cct" in place - same entity,
+        # same entity_id (dashboards keep working), no duplicate created.
+        suffix = "_cct" if m["cct"] in ("_cct", LEGACY_CCT_UID_SUFFIX) else ""
+        new_uid = f"{stable}_{m['model']}_ch{m['num']}{suffix}"
         groups.setdefault((ent.domain, new_uid), []).append(ent)
 
     kept_devices: dict[str, int] = {}

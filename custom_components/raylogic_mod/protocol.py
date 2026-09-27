@@ -7,8 +7,8 @@ is independent of the pair count.
 
 STATIC / config-based channel setup: a fixed channel count (from the model:
 2 or 4), the area taken from the config or from LEGACY_DEFAULT_AREA (0x0C),
-and each channel's type (relay/dimmer/fan/curtain/ctc) coming from the
-config flow. Relay/Dimmer/Fan/Curtain/CTC are all fully working in this
+and each channel's type (relay/dimmer/fan/curtain/cct) coming from the
+config flow. Relay/Dimmer/Fan/Curtain/CCT are all fully working in this
 mode (their command formats are already confirmed).
 
 NOTE: there used to be an "AUTO / BR40" mode here as well (RE8/H81-style
@@ -80,17 +80,17 @@ from .const import (
     CH_TYPE_DIMMER,
     CH_TYPE_FAN,
     CH_TYPE_CURTAIN,
-    CH_TYPE_CTC,
-    CTC_MODE_SINGLE,
-    CTC_MODE_DOUBLE,
-    CTC_SINGLE_BRIGHTNESS_ON,
-    CTC_SINGLE_BRIGHTNESS_OFF,
-    CTC_SINGLE_CT_MIN_LEVEL,
-    CTC_SINGLE_CT_MAX_LEVEL,
-    CTC_DOUBLE_CONST_BYTE,
-    CTC_MIN_KELVIN,
-    CTC_MAX_KELVIN,
-    CTC_DEFAULT_KELVIN,
+    CH_TYPE_CCT,
+    CCT_MODE_SINGLE,
+    CCT_MODE_DOUBLE,
+    CCT_SINGLE_BRIGHTNESS_ON,
+    CCT_SINGLE_BRIGHTNESS_OFF,
+    CCT_SINGLE_CT_MIN_LEVEL,
+    CCT_SINGLE_CT_MAX_LEVEL,
+    CCT_DOUBLE_CONST_BYTE,
+    CCT_MIN_KELVIN,
+    CCT_MAX_KELVIN,
+    CCT_DEFAULT_KELVIN,
     DEFAULT_CHANNEL_COUNT,
     LEGACY_DEFAULT_AREA,
     AREA_MIN,
@@ -169,7 +169,7 @@ class RaylogicModDevice:
         legacy_channel_count: int = DEFAULT_CHANNEL_COUNT,
         channel_start: int = 1,
         channel_types: Optional[dict[int, str]] = None,
-        channel_ctc_modes: Optional[dict[int, str]] = None,
+        channel_cct_modes: Optional[dict[int, str]] = None,
         state_callback: Optional[Callable] = None,
         state_dir: Optional[str] = None,
     ):
@@ -197,10 +197,10 @@ class RaylogicModDevice:
         # (relay/dimmer/fan/curtain) - the device does not report it itself,
         # so it comes manually from config_flow. {ch_num: type_str}
         self._channel_types: dict[int, str] = channel_types or {}
-        # For CTC channels: 'single' (CW/WW, *AR= frames) or 'double'
+        # For CCT channels: 'single' (CW/WW, *AR= frames) or 'double'
         # (warm+cool, *AZ= frames) - comes from config_flow. Ignored for
-        # non-CTC channels.
-        self._channel_ctc_modes: dict[int, str] = channel_ctc_modes or {}
+        # non-CCT channels.
+        self._channel_cct_modes: dict[int, str] = channel_cct_modes or {}
 
         # LEARN mode: if no manual area/channel count is given, the device
         # learns Area + Channel by listening to *AR= echoes (from the app/a
@@ -1709,7 +1709,7 @@ class RaylogicModDevice:
             area = max(AREA_MIN, min(AREA_MAX, self._legacy_area))
             start = self._channel_start
             for ch_num in range(start, start + self._legacy_channel_count):
-                # NOTE: CTC and Curtain are both PAIRED modes - when one
+                # NOTE: CCT and Curtain are both PAIRED modes - when one
                 # channel of a pair becomes one of these, the other
                 # physical channel deliberately has no key in this dict
                 # (see _resolve_channel_types in __init__.py), so that no
@@ -1724,8 +1724,8 @@ class RaylogicModDevice:
                     "on": existing.get("on", False),
                     "brightness": existing.get("brightness", 0),
                     "percentage": existing.get("percentage", 0),
-                    "ctc_mode": self._channel_ctc_modes.get(ch_num, CTC_MODE_SINGLE),
-                    "color_temp_kelvin": existing.get("color_temp_kelvin", CTC_DEFAULT_KELVIN),
+                    "cct_mode": self._channel_cct_modes.get(ch_num, CCT_MODE_SINGLE),
+                    "color_temp_kelvin": existing.get("color_temp_kelvin", CCT_DEFAULT_KELVIN),
                     "learned": False,
                 }
             _LOGGER.info(
@@ -1881,8 +1881,8 @@ class RaylogicModDevice:
             self.state_callback(self.ip, ch_num, self.channel_states[ch_num])
 
     # ------------------------------------------------------------------ #
-    # Control - CTC (Colour Temperature Control / tunable white)
-    # See the CTC comment block in const.py for the full wire-format
+    # Control - CCT (Colour Temperature Control / tunable white)
+    # See the CCT comment block in const.py for the full wire-format
     # explanation of both sub-modes (single/double driver).
     # ------------------------------------------------------------------ #
     def _pair_bounds(self, ch_num: int) -> tuple[int, int]:
@@ -1890,10 +1890,10 @@ class RaylogicModDevice:
         MOD4U: channel_start/+1 and channel_start+2/+3) - returns the (lo,
         hi) physical channel numbers of that pair.
 
-        BUG FIX (MOD2U -> MOD4U generalization): previously CTC always
+        BUG FIX (MOD2U -> MOD4U generalization): previously CCT always
         assumed a HARDCODED (channel_start, channel_start+1) - which was
         fine on the MOD2U because it only has one pair, but on the MOD4U
-        this BROKE CTC on the 2nd pair (channel_start+2/+3) (the 1st pair's
+        this BROKE CCT on the 2nd pair (channel_start+2/+3) (the 1st pair's
         channels were used, while the real hardware was something else).
         The pair is now derived from the configured channel's own position
         and works correctly for any pair."""
@@ -1902,25 +1902,25 @@ class RaylogicModDevice:
         lo = self._channel_start + pair_index * CHANNELS_PER_PAIR
         return lo, lo + 1
 
-    def _ctc_single_wire_channels(self, ch_num: int) -> tuple[int, int]:
-        """Single-driver CTC uses a physical channel PAIR (such as channel 3
+    def _cct_single_wire_channels(self, ch_num: int) -> tuple[int, int]:
+        """Single-driver CCT uses a physical channel PAIR (such as channel 3
         + channel 4), not a fixed 0x01/0x02 sub-signal id (as was wrongly
         assumed earlier, based on a single-channel capture only).
         User-confirmed rule: of the TWO physical channels of the pair, the
         lower number is colour temperature and the higher number is
         brightness.
 
-        `ch_num` here is this CTC entity's own (primary/configured)
+        `ch_num` here is this CCT entity's own (primary/configured)
         physical channel number - its PAIR (not always the device's first
-        pair) is derived from it, so that on a MOD4U both CTC Pair 1
-        (channel_start/+1) and CTC Pair 2 (channel_start+2/+3) work
+        pair) is derived from it, so that on a MOD4U both CCT Pair 1
+        (channel_start/+1) and CCT Pair 2 (channel_start+2/+3) work
         independently, each with its own correct physical channels.
 
         Returns: (ct_channel, brightness_channel)."""
         lo, hi = self._pair_bounds(ch_num)
         return lo, hi
 
-    async def set_ctc(
+    async def set_cct(
         self, ch_num: int,
         brightness: Optional[int] = None,
         color_temp_kelvin: Optional[int] = None,
@@ -1936,33 +1936,33 @@ class RaylogicModDevice:
         area = state.get("area")
         if not area:
             _LOGGER.error(
-                "Raylogic %s: the Area of channel %d (CTC) is not "
+                "Raylogic %s: the Area of channel %d (CCT) is not "
                 "known - the command cannot be sent.", self.ip, ch_num,
             )
             return
-        mode = state.get("ctc_mode", CTC_MODE_SINGLE)
+        mode = state.get("cct_mode", CCT_MODE_SINGLE)
         if brightness is not None:
             brightness = self._snap_to_off(brightness)
 
-        if mode == CTC_MODE_DOUBLE:
+        if mode == CCT_MODE_DOUBLE:
             eff_brightness = (
                 brightness if brightness is not None
                 else state.get("brightness", 255)
             )
             eff_kelvin = (
                 color_temp_kelvin if color_temp_kelvin is not None
-                else state.get("color_temp_kelvin", CTC_DEFAULT_KELVIN)
+                else state.get("color_temp_kelvin", CCT_DEFAULT_KELVIN)
             )
-            await self._send_ctc_double(ch_num, area, eff_brightness, eff_kelvin)
+            await self._send_cct_double(ch_num, area, eff_brightness, eff_kelvin)
         else:
-            ct_channel, brightness_channel = self._ctc_single_wire_channels(ch_num)
+            ct_channel, brightness_channel = self._cct_single_wire_channels(ch_num)
             eff_brightness = state.get("brightness", 255)
-            eff_kelvin = state.get("color_temp_kelvin", CTC_DEFAULT_KELVIN)
+            eff_kelvin = state.get("color_temp_kelvin", CCT_DEFAULT_KELVIN)
             if brightness is not None:
                 eff_brightness = brightness
                 level = (
-                    CTC_SINGLE_BRIGHTNESS_OFF if not brightness
-                    else max(CTC_SINGLE_BRIGHTNESS_ON, min(254, 256 - brightness))
+                    CCT_SINGLE_BRIGHTNESS_OFF if not brightness
+                    else max(CCT_SINGLE_BRIGHTNESS_ON, min(254, 256 - brightness))
                 )
                 cmd_hex = (
                     f"{CMD_ADDR_HIGH}{CMD_CHANNEL_DIRECT}{area:02X}"
@@ -1986,7 +1986,7 @@ class RaylogicModDevice:
         if self.state_callback:
             self.state_callback(self.ip, ch_num, self.channel_states[ch_num])
 
-    async def _send_ctc_double(
+    async def _send_cct_double(
         self, ch_num: int, area: int, brightness: Optional[int], kelvin: int,
     ):
         """Double-driver frame - warm/cool cross-fade formula, derived to
@@ -1994,13 +1994,13 @@ class RaylogicModDevice:
 
         Wire: <area><ch_lo><level_lo><ch_hi><level_hi><const><pct>
 
-        BUG FIX (CCT/CTC did not work on any other channel): previously the
+        BUG FIX (CCT/CCT did not work on any other channel): previously the
         channel bytes here were HARDCODED "01" and "02". The mistake went
-        unnoticed because the MOD2U the capture was taken from had its CTC
-        pair on physical channels 1 and 2. On the Area 12 MOD4U the CTC pair
+        unnoticed because the MOD2U the capture was taken from had its CCT
+        pair on physical channels 1 and 2. On the Area 12 MOD4U the CCT pair
         is on channels 15-16, so 0F/10 must go into the frame - sending
         01/02 made the device drop the frame, which is why the CCT light did
-        not respond at all. Both channel bytes are now derived from this CTC
+        not respond at all. Both channel bytes are now derived from this CCT
         channel's own pair.
 
         Wiring (confirmed by the user on real hardware): the LOWER physical
@@ -2008,8 +2008,8 @@ class RaylogicModDevice:
         YELLOW/warm driver - so cool goes into level_lo and warm into
         level_hi."""
         cool_channel, warm_channel = self._pair_bounds(ch_num)
-        kelvin = max(CTC_MIN_KELVIN, min(CTC_MAX_KELVIN, kelvin))
-        warm_frac = 1 - (kelvin - CTC_MIN_KELVIN) / (CTC_MAX_KELVIN - CTC_MIN_KELVIN)
+        kelvin = max(CCT_MIN_KELVIN, min(CCT_MAX_KELVIN, kelvin))
+        warm_frac = 1 - (kelvin - CCT_MIN_KELVIN) / (CCT_MAX_KELVIN - CCT_MIN_KELVIN)
         brightness = max(0, min(255, brightness or 0))
         bright_frac = brightness / 255
         warm_on = warm_frac * bright_frac
@@ -2021,10 +2021,10 @@ class RaylogicModDevice:
         cmd_hex = (
             f"{area:02X}{cool_channel:02X}{cool_level:02X}"
             f"{warm_channel:02X}{warm_level:02X}"
-            f"{CTC_DOUBLE_CONST_BYTE:02X}{pct:02X}"
+            f"{CCT_DOUBLE_CONST_BYTE:02X}{pct:02X}"
         )
         _LOGGER.debug(
-            "Raylogic %s: CTC(double) ch%d -> cool ch%d=0x%02X, warm "
+            "Raylogic %s: CCT(double) ch%d -> cool ch%d=0x%02X, warm "
             "ch%d=0x%02X, pct=%d (area %d) - *AZ=%s",
             self.ip, ch_num, cool_channel, cool_level, warm_channel,
             warm_level, pct, area, cmd_hex,
@@ -2032,22 +2032,22 @@ class RaylogicModDevice:
         await self._send_addressed(f"*AZ={cmd_hex}", ch=ch_num)
 
     def _kelvin_to_single_ct_level(self, kelvin: int) -> int:
-        kelvin = max(CTC_MIN_KELVIN, min(CTC_MAX_KELVIN, kelvin))
-        frac = (kelvin - CTC_MIN_KELVIN) / (CTC_MAX_KELVIN - CTC_MIN_KELVIN)
-        level = round(CTC_SINGLE_CT_MIN_LEVEL + frac * (CTC_SINGLE_CT_MAX_LEVEL - CTC_SINGLE_CT_MIN_LEVEL))
-        return max(CTC_SINGLE_CT_MIN_LEVEL, min(CTC_SINGLE_CT_MAX_LEVEL, level))
+        kelvin = max(CCT_MIN_KELVIN, min(CCT_MAX_KELVIN, kelvin))
+        frac = (kelvin - CCT_MIN_KELVIN) / (CCT_MAX_KELVIN - CCT_MIN_KELVIN)
+        level = round(CCT_SINGLE_CT_MIN_LEVEL + frac * (CCT_SINGLE_CT_MAX_LEVEL - CCT_SINGLE_CT_MIN_LEVEL))
+        return max(CCT_SINGLE_CT_MIN_LEVEL, min(CCT_SINGLE_CT_MAX_LEVEL, level))
 
     def _single_ct_level_to_kelvin(self, level: int) -> int:
-        level = max(CTC_SINGLE_CT_MIN_LEVEL, min(CTC_SINGLE_CT_MAX_LEVEL, level))
-        frac = (level - CTC_SINGLE_CT_MIN_LEVEL) / (CTC_SINGLE_CT_MAX_LEVEL - CTC_SINGLE_CT_MIN_LEVEL)
-        return round(CTC_MIN_KELVIN + frac * (CTC_MAX_KELVIN - CTC_MIN_KELVIN))
+        level = max(CCT_SINGLE_CT_MIN_LEVEL, min(CCT_SINGLE_CT_MAX_LEVEL, level))
+        frac = (level - CCT_SINGLE_CT_MIN_LEVEL) / (CCT_SINGLE_CT_MAX_LEVEL - CCT_SINGLE_CT_MIN_LEVEL)
+        return round(CCT_MIN_KELVIN + frac * (CCT_MAX_KELVIN - CCT_MIN_KELVIN))
 
     @staticmethod
     def _double_levels_to_kelvin(cool_level: int, warm_level: int) -> Optional[int]:
         """Colour temperature from the cool + warm level bytes of *AZ=
         (v1.6.5).
 
-        The encoder (_send_ctc_double) scales each channel by both colour
+        The encoder (_send_cct_double) scales each channel by both colour
         AND brightness: output = share x brightness, byte = 256 - output x
         255, 0xFF = off. Previously kelvin was derived from the WARM byte
         only - which was wrong as soon as brightness was below 100%
@@ -2068,20 +2068,20 @@ class RaylogicModDevice:
         if cool + warm < _AZ_MIN_OUTPUT_FOR_KELVIN:
             return None
         warm_frac = warm / (cool + warm)
-        return round(CTC_MAX_KELVIN - warm_frac * (CTC_MAX_KELVIN - CTC_MIN_KELVIN))
+        return round(CCT_MAX_KELVIN - warm_frac * (CCT_MAX_KELVIN - CCT_MIN_KELVIN))
 
-    def _find_ctc_channel(
+    def _find_cct_channel(
         self, area: int, mode: str, wire_channel: Optional[int] = None
     ) -> Optional[int]:
-        """The configured CTC channel (if any) matching this Area and this
-        sub-mode (single/double) - for CTC, incoming frames have to be
+        """The configured CCT channel (if any) matching this Area and this
+        sub-mode (single/double) - for CCT, incoming frames have to be
         matched BEFORE the normal ch_num-based lookup, because the wire
         'channel' byte here is a sub-signal (brightness/colour), not a
         physical channel.
 
-        BUG FIX (MOD2U -> MOD4U generalization): on the MOD2U only one CTC
+        BUG FIX (MOD2U -> MOD4U generalization): on the MOD2U only one CCT
         pair was possible, so an area+mode match was enough. The MOD4U can
-        have 2 pairs - if both are CTC (single mode) in the SAME Area, the
+        have 2 pairs - if both are CCT (single mode) in the SAME Area, the
         old code always returned the FIRST match, which mixed up the data
         of both pairs (an incoming Pair 2 frame wrongly updated the Pair 1
         entity, or vice versa). Now, if `wire_channel` is given (always
@@ -2092,8 +2092,8 @@ class RaylogicModDevice:
         candidates = [
             (cn, st) for cn, st in self.channel_states.items()
             if (
-                st.get("type") == CH_TYPE_CTC
-                and st.get("ctc_mode", CTC_MODE_SINGLE) == mode
+                st.get("type") == CH_TYPE_CCT
+                and st.get("cct_mode", CCT_MODE_SINGLE) == mode
                 and st.get("area") == area
             )
         ]
@@ -2101,7 +2101,7 @@ class RaylogicModDevice:
             return None
         if wire_channel is None:
             return candidates[0][0]
-        # Multiple CTC candidates (both pairs in the same Area) - pick the
+        # Multiple CCT candidates (both pairs in the same Area) - pick the
         # one that matches wire_channel's pair.
         target_lo, target_hi = self._pair_bounds(wire_channel)
         for cn, _st in candidates:
@@ -2117,12 +2117,12 @@ class RaylogicModDevice:
             return candidates[0][0]
         return None
 
-    def _apply_ctc_single_update(self, ch_num: int, wire_channel: int, level: int):
+    def _apply_cct_single_update(self, ch_num: int, wire_channel: int, level: int):
         st = self.channel_states.setdefault(ch_num, {})
         self._note_rx(ch_num)
-        _ct_channel, brightness_channel = self._ctc_single_wire_channels(ch_num)
+        _ct_channel, brightness_channel = self._cct_single_wire_channels(ch_num)
         if wire_channel == brightness_channel:
-            if level == CTC_SINGLE_BRIGHTNESS_OFF:
+            if level == CCT_SINGLE_BRIGHTNESS_OFF:
                 st.update({"on": False, "brightness": 0})
             else:
                 st.update({"on": True, "brightness": max(1, min(255, 256 - level))})
@@ -2132,14 +2132,14 @@ class RaylogicModDevice:
             self.state_callback(self.ip, ch_num, st)
 
     def _handle_az(self, line: str):
-        """*AZ= = double-driver CTC frame (cool+warm combined). Format:
+        """*AZ= = double-driver CCT frame (cool+warm combined). Format:
         <area><ch_lo><cool_level><ch_hi><warm_level><64><pct> (7 bytes,
         see const.py) - the lower physical channel of the pair = white/
-        cool, the higher = yellow/warm (the same wiring _send_ctc_double
+        cool, the higher = yellow/warm (the same wiring _send_cct_double
         sends).
 
         BUG FIX: previously this parser returned as soon as
-        `b[1] != 0x01 or b[3] != 0x02`, i.e. incoming frames for any CTC
+        `b[1] != 0x01 or b[3] != 0x02`, i.e. incoming frames for any CCT
         pair other than channels 1-2 (such as 15-16) were silently
         discarded - the CCT light's state in HA never synced. Any
         consecutive channel pair is now accepted."""
@@ -2163,8 +2163,8 @@ class RaylogicModDevice:
             area = b[0]
             cool_level, warm_level = b[2], b[4]
             pct = b[6]
-            ch_num = self._find_ctc_channel(
-                area, CTC_MODE_DOUBLE, wire_channel=b[1],
+            ch_num = self._find_cct_channel(
+                area, CCT_MODE_DOUBLE, wire_channel=b[1],
             )
             if ch_num is None:
                 return
@@ -2583,7 +2583,7 @@ class RaylogicModDevice:
             level = b[3]
             ch_num = b[4]
 
-            # CTC (single-driver) special case: here the "channel" byte
+            # CCT (single-driver) special case: here the "channel" byte
             # (ch_num) IS the real physical channel number (such as 3 or 4)
             # - NOT a fixed 0x01/0x02 sub-signal id (the earlier mistake,
             # assumed from a single-channel capture only). Within the pair,
@@ -2592,11 +2592,11 @@ class RaylogicModDevice:
             # handled BEFORE the normal ch_num-based lookup, otherwise it
             # could wrongly corrupt the state of another normal channel
             # (whose real ch_num is 1 or 2).
-            ctc_ch = self._find_ctc_channel(area, CTC_MODE_SINGLE, wire_channel=ch_num)
-            if ctc_ch is not None:
-                ct_channel, brightness_channel = self._ctc_single_wire_channels(ctc_ch)
+            cct_ch = self._find_cct_channel(area, CCT_MODE_SINGLE, wire_channel=ch_num)
+            if cct_ch is not None:
+                ct_channel, brightness_channel = self._cct_single_wire_channels(cct_ch)
                 if ch_num in (ct_channel, brightness_channel):
-                    self._apply_ctc_single_update(ctc_ch, ch_num, level)
+                    self._apply_cct_single_update(cct_ch, ch_num, level)
                     return
 
             # Manual mode (Area configured, >0): only accept frames for THAT

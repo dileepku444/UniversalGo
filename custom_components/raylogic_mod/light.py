@@ -14,8 +14,8 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
-    DOMAIN, CH_TYPE_DIMMER, CH_TYPE_CTC,
-    CTC_MIN_KELVIN, CTC_MAX_KELVIN, CTC_DEFAULT_KELVIN,
+    DOMAIN, CH_TYPE_DIMMER, CH_TYPE_CCT,
+    CCT_MIN_KELVIN, CCT_MAX_KELVIN, CCT_DEFAULT_KELVIN,
 )
 from .protocol import RaylogicModDevice
 
@@ -30,13 +30,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if state.get("type") == CH_TYPE_DIMMER
     ]
     entities += [
-        RaylogicModCtcLight(hass, entry, device, ch_num, state)
+        RaylogicModCctLight(hass, entry, device, ch_num, state)
         for ch_num, state in device.channel_states.items()
-        if state.get("type") == CH_TYPE_CTC
+        if state.get("type") == CH_TYPE_CCT
     ]
     if entities:
         _LOGGER.info(
-            "Setting up %d light channel(s) (dimmer+CTC) on %s",
+            "Setting up %d light channel(s) (dimmer+CCT) on %s",
             len(entities), device.ip,
         )
         async_add_entities(entities)
@@ -154,15 +154,15 @@ class RaylogicModLight(LightEntity, RestoreEntity):
         self.async_write_ha_state()
 
 
-class RaylogicModCtcLight(LightEntity, RestoreEntity):
-    """CTC (tunable-white / colour-temperature) channel.
+class RaylogicModCctLight(LightEntity, RestoreEntity):
+    """CCT (tunable-white / colour-temperature) channel.
 
     Supports BOTH sub-modes captured in Model_Number_Mod2u.txt (Area 16):
     'single' driver (CW/WW, one physical channel-pair, *AR= frames - this
     is the mode in the user's own Mod Settings screenshot) and 'double'
     driver (separate warm+cool channels, one combined *AZ= frame). Which
     one applies is chosen per-channel in config_flow.py (see const.py's
-    CTC comment block for the full wire-format writeup and confidence
+    CCT comment block for the full wire-format writeup and confidence
     notes - the double-driver formula in particular is derived rather
     than a literal captured table, since only pure-brightness and
     pure-colour sweeps were captured, not a combined change).
@@ -171,8 +171,8 @@ class RaylogicModCtcLight(LightEntity, RestoreEntity):
     _attr_has_entity_name = False
     _attr_color_mode = ColorMode.COLOR_TEMP
     _attr_supported_color_modes = {ColorMode.COLOR_TEMP}
-    _attr_min_color_temp_kelvin = CTC_MIN_KELVIN
-    _attr_max_color_temp_kelvin = CTC_MAX_KELVIN
+    _attr_min_color_temp_kelvin = CCT_MIN_KELVIN
+    _attr_max_color_temp_kelvin = CCT_MAX_KELVIN
 
     def __init__(self, hass, entry, device: RaylogicModDevice, ch_num, initial_state):
         self._hass = hass
@@ -181,11 +181,11 @@ class RaylogicModCtcLight(LightEntity, RestoreEntity):
         self._ch_num = ch_num
         suffix = device.ip_suffix
         area = initial_state.get("area", 0)
-        self._attr_unique_id = f"{device.stable_id}_{device.model}_ch{ch_num}_ctc"
-        self._attr_name = f"{device.model}_{suffix}_area{area}_ch{ch_num}_ctc"
+        self._attr_unique_id = f"{device.stable_id}_{device.model}_ch{ch_num}_cct"
+        self._attr_name = f"{device.model}_{suffix}_area{area}_ch{ch_num}_cct"
         self._is_on = initial_state.get("on", False)
         self._brightness = initial_state.get("brightness", 0)
-        self._kelvin = initial_state.get("color_temp_kelvin", CTC_DEFAULT_KELVIN)
+        self._kelvin = initial_state.get("color_temp_kelvin", CCT_DEFAULT_KELVIN)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -227,10 +227,10 @@ class RaylogicModCtcLight(LightEntity, RestoreEntity):
         # brightness - the same as a regular dimmer light.
         if brightness is None and not self._is_on:
             brightness = self._brightness or 255
-        await self._device.set_ctc(
+        await self._device.set_cct(
             self._ch_num, brightness=brightness, color_temp_kelvin=kelvin,
         )
-        # Take the state from device.channel_states: set_ctc "snaps to
+        # Take the state from device.channel_states: set_cct "snaps to
         # OFF" at 1% brightness or less (slider all the way down turns the
         # light fully OFF), and the brightness=0 ON/OFF mismatch is also
         # reflected correctly this way. For kelvin-only calls
@@ -244,7 +244,7 @@ class RaylogicModCtcLight(LightEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
-        await self._device.set_ctc(self._ch_num, brightness=0)
+        await self._device.set_cct(self._ch_num, brightness=0)
         self._is_on = False
         self._brightness = 0
         self.async_write_ha_state()

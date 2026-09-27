@@ -6,14 +6,14 @@ MOD4U has 4 physical channels instead of 2, grouped into 2 PAIRS:
   Pair 1 = channel_start + 0, channel_start + 1   (e.g. ch1, ch2)
   Pair 2 = channel_start + 2, channel_start + 3   (e.g. ch3, ch4)
 Each channel can independently be a Relay / Dimmer / Fan, BUT Curtain and
-CTC are both "paired" modes - when one channel of a pair is set to Curtain
-or CTC, the whole pair (both physical channels) is consumed internally by
-that ONE logical entity (exactly as for CTC on the MOD2U - Curtain follows
+CCT are both "paired" modes - when one channel of a pair is set to Curtain
+or CCT, the whole pair (both physical channels) is consumed internally by
+that ONE logical entity (exactly as for CCT on the MOD2U - Curtain follows
 the same rule here, as confirmed by the user).
 
 This file contains two kinds of values:
   1. CONFIRMED  - already verified from the MOD2U capture (the Relay/
-     Dimmer/Fan/CTC-pair-1 format is identical for the MOD4U, because at
+     Dimmer/Fan/CCT-pair-1 format is identical for the MOD4U, because at
      the wire-protocol level the MOD4U uses the same *AR=/*AZ= frame shape,
      just with more channels/pairs).
   2. PLACEHOLDER / TODO - the literal Curtain bytes for Pair 2 (channels
@@ -108,12 +108,12 @@ MODEL_MOD2F = "mod2f"
 DEVICE_MODELS: dict[str, dict] = {
     MODEL_MOD2U: {
         "name": "MOD2U",
-        "desc": "Universal 2-Channel Module (Dimmer/Fan/Curtain/Relay/CTC)",
+        "desc": "Universal 2-Channel Module (Dimmer/Fan/Curtain/Relay/CCT)",
         "channel_count": 2,
     },
     MODEL_MOD4U: {
         "name": "MOD4U",
-        "desc": "Universal 4-Channel Module (Dimmer/Fan/Curtain/Relay/CTC)",
+        "desc": "Universal 4-Channel Module (Dimmer/Fan/Curtain/Relay/CCT)",
         "channel_count": 4,
     },
     MODEL_MOD2F: {
@@ -179,20 +179,20 @@ DIMMER_LEVEL_ON = 0x01
 DIMMER_LEVEL_OFF = 0xFF
 
 # ------------------------------------------------------------------ #
-# CTC (Colour Temperature Control / tunable white) - CONFIRMED
+# CCT (Colour Temperature Control / tunable white) - CONFIRMED
 # (Model_Number_Mod2u.txt capture, Area 16, matches the user's own Mod
-# Settings screenshot: Channel 1 = CTC, "Single Driver" checked).
+# Settings screenshot: Channel 1 = CCT, "Single Driver" checked).
 #
-# The Raylogic GO app supports TWO CTC sub-modes, each with its own wire
+# The Raylogic GO app supports TWO CCT sub-modes, each with its own wire
 # format - which one a module uses is a config choice (the Double
 # Driver / Single Driver checkboxes in the app), not something the
 # device reports on its own, so it's selected in this integration's
-# config too (see config_flow.py CTC_MODE_OPTIONS). On the MOD4U this
+# config too (see config_flow.py CCT_MODE_OPTIONS). On the MOD4U this
 # sub-mode can be chosen SEPARATELY for EACH PAIR (Pair 1 and Pair 2 can
 # each independently be single or double).
 #
 # 1) SINGLE DRIVER (CW/WW, one physical channel-PAIR - confirmed by the
-#    user: configuring a CTC light in the Raylogic GO app actually
+#    user: configuring a CCT light in the Raylogic GO app actually
 #    consumes TWO real physical channels, e.g. channel 3 + channel 4,
 #    exactly like any other 2-channel allocation on this device) -
 #    identical frame shape to Relay/Dimmer/Fan (00 1A <area> <level>
@@ -208,14 +208,14 @@ DIMMER_LEVEL_OFF = 0xFF
 #        vs 0xFF corresponds to was NOT recorded in the capture (only
 #        consecutive level values, no colour reference) - if warm/cool
 #        comes out reversed in practice, just swap
-#        CTC_SINGLE_CT_MIN_LEVEL/MAX_LEVEL below.
+#        CCT_SINGLE_CT_MIN_LEVEL/MAX_LEVEL below.
 #      the HIGHER physical channel number -> brightness, level
 #        0x01=full .. 0xFF=off (same curve/formula as Dimmer above,
 #        reused as-is).
 #    This "lower=CT, higher=brightness" rule applies to WHICHEVER pair
-#    the CTC channel is in (Pair 1 = channel_start/channel_start+1, or
+#    the CCT channel is in (Pair 1 = channel_start/channel_start+1, or
 #    Pair 2 = channel_start+2/channel_start+3) - protocol.py derives the
-#    pair from the configured CTC channel's own position, not a fixed
+#    pair from the configured CCT channel's own position, not a fixed
 #    channel_start/channel_start+1 assumption (that was a MOD2U-only
 #    shortcut since MOD2U only ever HAD one pair).
 #
@@ -224,18 +224,18 @@ DIMMER_LEVEL_OFF = 0xFF
 #      Frame (7 bytes after *AZ=):
 #          <area><ch_lo><level_lo><ch_hi><level_hi><64><pct>
 #
-#      BUG FIX (this was the real CCT/CTC bug): <ch_lo> and <ch_hi> used
+#      BUG FIX (this was the real CCT/CCT bug): <ch_lo> and <ch_hi> used
 #      to be treated as FIXED "01"/"02" markers. That misunderstanding
 #      arose only because the device the capture was taken from (MOD2U,
-#      Area 16) had its CTC pair on PHYSICAL channels 1 and 2 - so a fixed
+#      Area 16) had its CCT pair on PHYSICAL channels 1 and 2 - so a fixed
 #      marker and the real channel number looked identical. Throughout the
-#      protocol every frame (relay/dimmer/fan/CTC-single) always carries
+#      protocol every frame (relay/dimmer/fan/CCT-single) always carries
 #      the REAL physical channel number, and the curtain slot byte is also
 #      derived from the channel - *AZ= follows the same rule. So on the
-#      Area 12 MOD4U, whose CTC pair is on channels 15-16, the frame should
+#      Area 12 MOD4U, whose CCT pair is on channels 15-16, the frame should
 #      have carried 0F/10 but carried 01/02 - the device dropped the frame,
 #      which is why the CCT light did not respond at all.
-#      protocol.py now derives both bytes from the CTC channel's own pair
+#      protocol.py now derives both bytes from the CCT channel's own pair
 #      (lower channel = cool slot, higher = warm slot).
 #      warm+cool always summed to 0x100 (256) in every captured colour-
 #      temperature-only sweep (fixed 100% brightness); a separate
@@ -252,24 +252,24 @@ DIMMER_LEVEL_OFF = 0xFF
 #      formula in protocol.py is derived to satisfy both captured
 #      sweeps exactly, but a combined brightness+colour capture would
 #      help confirm it fully.
-#      NOTE: the old "MOD4U limitation" (two double-driver CTC pairs in
+#      NOTE: the old "MOD4U limitation" (two double-driver CCT pairs in
 #      the same Area could not be told apart) no longer exists - since
 #      the frame now carries the real channel numbers, both pairs are
 #      cleanly distinguished by their own channel bytes.
 # ------------------------------------------------------------------ #
-CTC_MODE_SINGLE = "single"
-CTC_MODE_DOUBLE = "double"
+CCT_MODE_SINGLE = "single"
+CCT_MODE_DOUBLE = "double"
 
-CTC_SINGLE_BRIGHTNESS_ON = DIMMER_LEVEL_ON      # 0x01, same curve as Dimmer
-CTC_SINGLE_BRIGHTNESS_OFF = DIMMER_LEVEL_OFF    # 0xFF
-CTC_SINGLE_CT_MIN_LEVEL = 0x0B   # confirmed lowest captured level
-CTC_SINGLE_CT_MAX_LEVEL = 0xFF   # confirmed highest captured level
+CCT_SINGLE_BRIGHTNESS_ON = DIMMER_LEVEL_ON      # 0x01, same curve as Dimmer
+CCT_SINGLE_BRIGHTNESS_OFF = DIMMER_LEVEL_OFF    # 0xFF
+CCT_SINGLE_CT_MIN_LEVEL = 0x0B   # confirmed lowest captured level
+CCT_SINGLE_CT_MAX_LEVEL = 0xFF   # confirmed highest captured level
 
-CTC_DOUBLE_CONST_BYTE = 0x64     # constant byte seen in every *AZ= sample
+CCT_DOUBLE_CONST_BYTE = 0x64     # constant byte seen in every *AZ= sample
 
-CTC_MIN_KELVIN = 2700   # warmest end of the HA colour-temp slider
-CTC_MAX_KELVIN = 6500   # coolest end of the HA colour-temp slider
-CTC_DEFAULT_KELVIN = 4000
+CCT_MIN_KELVIN = 2700   # warmest end of the HA colour-temp slider
+CCT_MAX_KELVIN = 6500   # coolest end of the HA colour-temp slider
+CCT_DEFAULT_KELVIN = 4000
 
 # ------------------------------------------------------------------ #
 # Fan - CONFIRMED (Model_Number_Mod2u.txt, Area 12):
@@ -365,8 +365,35 @@ CH_TYPE_DIMMER = "dimmer"
 CH_TYPE_FAN = "fan"
 CH_TYPE_CURTAIN = "curtain"
 CH_TYPE_RELAY = "relay"
-CH_TYPE_CTC = "ctc"
+CH_TYPE_CCT = "cct"
 CH_TYPE_EMPTY = "empty"
+
+# v1.7.1: "CTC" was renamed to the correct term "CCT" (Correlated Colour
+# Temperature). Config entries saved by v1.7.0 and older still use the old
+# spelling - in the channel type value and in the "channel_N_..._mode"
+# keys. They are migrated once when the entry loads (async_migrate_entry in
+# __init__.py) and are also accepted wherever a saved config is read, so an
+# old config (for example restored from a backup) keeps working. Nothing of
+# this is sent to the module - the wire protocol never contained it.
+LEGACY_CCT_TYPE = "ctc"
+LEGACY_CCT_MODE_KEY = "channel_{}_ctc_mode"
+LEGACY_CCT_UID_SUFFIX = "_ctc"
+
+
+def normalize_legacy_cct(conf: dict) -> dict:
+    """Return a copy of a saved config with the pre-1.7.1 "ctc" spellings
+    converted to "cct" (mode keys and channel type values). Idempotent; a
+    key that already exists under the new name always wins."""
+    out = dict(conf)
+    for n in range(1, 5):
+        old_key, new_key = LEGACY_CCT_MODE_KEY.format(n), f"channel_{n}_cct_mode"
+        if old_key in out:
+            value = out.pop(old_key)
+            out.setdefault(new_key, value)
+        type_key = f"channel_{n}_type"
+        if out.get(type_key) == LEGACY_CCT_TYPE:
+            out[type_key] = CH_TYPE_CCT
+    return out
 
 CHANNELS_PER_PAIR = 2
 DEFAULT_CHANNEL_COUNT = 4  # fallback only, if the model info is unavailable for some reason
